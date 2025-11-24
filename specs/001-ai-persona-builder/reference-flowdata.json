@@ -1,0 +1,566 @@
+{
+  "nodes": [
+    {
+      "id": "upstashRedisBackedChatMemory_0",
+      "position": {
+        "x": 1376.2357827858696,
+        "y": -87.39755311855171
+      },
+      "type": "customNode",
+      "data": {
+        "label": "Upstash Redis-Backed Chat Memory",
+        "name": "upstashRedisBackedChatMemory",
+        "version": 2,
+        "type": "UpstashRedisBackedChatMemory",
+        "icon": "/usr/src/packages/server/node_modules/flowise-components/dist/nodes/memory/UpstashRedisBackedChatMemory/upstash.svg",
+        "category": "Memory",
+        "description": "Summarizes the conversation and stores the memory in Upstash Redis server",
+        "baseClasses": [
+          "UpstashRedisBackedChatMemory",
+          "BaseChatMemory",
+          "BaseMemory"
+        ],
+        "credential": "b88f589c-e0fd-4a2e-a353-0db6b491ac8e",
+        "inputs": {
+          "baseURL": "https://obliging-zebra-56633.upstash.io",
+          "sessionId": "",
+          "sessionTTL": "",
+          "memoryKey": "chat_history"
+        },
+        "filePath": "/usr/src/packages/server/node_modules/flowise-components/dist/nodes/memory/UpstashRedisBackedChatMemory/UpstashRedisBackedChatMemory.js",
+        "inputAnchors": [],
+        "inputParams": [
+          {
+            "label": "Connect Credential",
+            "name": "credential",
+            "type": "credential",
+            "description": "Configure password authentication on your upstash redis instance",
+            "credentialNames": [
+              "upstashRedisMemoryApi"
+            ],
+            "id": "upstashRedisBackedChatMemory_0-input-credential-credential"
+          },
+          {
+            "label": "Upstash Redis REST URL",
+            "name": "baseURL",
+            "type": "string",
+            "placeholder": "https://<your-url>.upstash.io",
+            "id": "upstashRedisBackedChatMemory_0-input-baseURL-string"
+          },
+          {
+            "label": "Session Id",
+            "name": "sessionId",
+            "type": "string",
+            "description": "If not specified, a random id will be used. Learn <a target=\"_blank\" href=\"https://docs.flowiseai.com/memory/long-term-memory#ui-and-embedded-chat\">more</a>",
+            "default": "",
+            "additionalParams": true,
+            "optional": true,
+            "id": "upstashRedisBackedChatMemory_0-input-sessionId-string"
+          },
+          {
+            "label": "Session Timeouts",
+            "name": "sessionTTL",
+            "type": "number",
+            "description": "Omit this parameter to make sessions never expire",
+            "additionalParams": true,
+            "optional": true,
+            "id": "upstashRedisBackedChatMemory_0-input-sessionTTL-number"
+          },
+          {
+            "label": "Memory Key",
+            "name": "memoryKey",
+            "type": "string",
+            "default": "chat_history",
+            "additionalParams": true,
+            "id": "upstashRedisBackedChatMemory_0-input-memoryKey-string"
+          }
+        ],
+        "outputs": {},
+        "outputAnchors": [
+          {
+            "id": "upstashRedisBackedChatMemory_0-output-upstashRedisBackedChatMemory-UpstashRedisBackedChatMemory|BaseChatMemory|BaseMemory",
+            "name": "upstashRedisBackedChatMemory",
+            "label": "UpstashRedisBackedChatMemory",
+            "description": "Summarizes the conversation and stores the memory in Upstash Redis server",
+            "type": "UpstashRedisBackedChatMemory | BaseChatMemory | BaseMemory"
+          }
+        ],
+        "id": "upstashRedisBackedChatMemory_0",
+        "selected": false
+      },
+      "width": 300,
+      "height": 427,
+      "positionAbsolute": {
+        "x": 1376.2357827858696,
+        "y": -87.39755311855171
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "chatOpenAI_0",
+      "position": {
+        "x": 1756.0474577821726,
+        "y": 457.1978403019996
+      },
+      "type": "customNode",
+      "data": {
+        "loadMethods": {},
+        "label": "ChatOpenAI",
+        "name": "chatOpenAI",
+        "version": 8,
+        "type": "ChatOpenAI",
+        "icon": "/usr/src/packages/server/node_modules/flowise-components/dist/nodes/chatmodels/ChatOpenAI/openai.svg",
+        "category": "Chat Models",
+        "description": "Wrapper around OpenAI large language models that use the Chat endpoint",
+        "baseClasses": [
+          "ChatOpenAI",
+          "BaseChatModel",
+          "BaseLanguageModel",
+          "Runnable"
+        ],
+        "credential": "733502da-aa04-4be5-98fa-c5f8c7f4e762",
+        "inputs": {
+          "cache": "",
+          "modelName": "gpt-4o-2024-08-06",
+          "temperature": "1",
+          "streaming": true,
+          "maxTokens": "",
+          "topP": "",
+          "frequencyPenalty": "",
+          "presencePenalty": "",
+          "timeout": "",
+          "basepath": "",
+          "proxyUrl": "",
+          "stopSequence": "",
+          "baseOptions": "",
+          "allowImageUploads": "",
+          "imageResolution": "low"
+        },
+        "filePath": "/usr/src/packages/server/node_modules/flowise-components/dist/nodes/chatmodels/ChatOpenAI/ChatOpenAI.js",
+        "inputAnchors": [
+          {
+            "label": "Cache",
+            "name": "cache",
+            "type": "BaseCache",
+            "optional": true,
+            "id": "chatOpenAI_0-input-cache-BaseCache"
+          }
+        ],
+        "inputParams": [
+          {
+            "label": "Connect Credential",
+            "name": "credential",
+            "type": "credential",
+            "credentialNames": [
+              "openAIApi"
+            ],
+            "id": "chatOpenAI_0-input-credential-credential"
+          },
+          {
+            "label": "Model Name",
+            "name": "modelName",
+            "type": "asyncOptions",
+            "loadMethod": "listModels",
+            "default": "gpt-4o-mini",
+            "id": "chatOpenAI_0-input-modelName-asyncOptions"
+          },
+          {
+            "label": "Temperature",
+            "name": "temperature",
+            "type": "number",
+            "step": 0.1,
+            "default": 0.9,
+            "optional": true,
+            "id": "chatOpenAI_0-input-temperature-number"
+          },
+          {
+            "label": "Streaming",
+            "name": "streaming",
+            "type": "boolean",
+            "default": true,
+            "optional": true,
+            "additionalParams": true,
+            "id": "chatOpenAI_0-input-streaming-boolean"
+          },
+          {
+            "label": "Max Tokens",
+            "name": "maxTokens",
+            "type": "number",
+            "step": 1,
+            "optional": true,
+            "additionalParams": true,
+            "id": "chatOpenAI_0-input-maxTokens-number"
+          },
+          {
+            "label": "Top Probability",
+            "name": "topP",
+            "type": "number",
+            "step": 0.1,
+            "optional": true,
+            "additionalParams": true,
+            "id": "chatOpenAI_0-input-topP-number"
+          },
+          {
+            "label": "Frequency Penalty",
+            "name": "frequencyPenalty",
+            "type": "number",
+            "step": 0.1,
+            "optional": true,
+            "additionalParams": true,
+            "id": "chatOpenAI_0-input-frequencyPenalty-number"
+          },
+          {
+            "label": "Presence Penalty",
+            "name": "presencePenalty",
+            "type": "number",
+            "step": 0.1,
+            "optional": true,
+            "additionalParams": true,
+            "id": "chatOpenAI_0-input-presencePenalty-number"
+          },
+          {
+            "label": "Timeout",
+            "name": "timeout",
+            "type": "number",
+            "step": 1,
+            "optional": true,
+            "additionalParams": true,
+            "id": "chatOpenAI_0-input-timeout-number"
+          },
+          {
+            "label": "BasePath",
+            "name": "basepath",
+            "type": "string",
+            "optional": true,
+            "additionalParams": true,
+            "id": "chatOpenAI_0-input-basepath-string"
+          },
+          {
+            "label": "Proxy Url",
+            "name": "proxyUrl",
+            "type": "string",
+            "optional": true,
+            "additionalParams": true,
+            "id": "chatOpenAI_0-input-proxyUrl-string"
+          },
+          {
+            "label": "Stop Sequence",
+            "name": "stopSequence",
+            "type": "string",
+            "rows": 4,
+            "optional": true,
+            "description": "List of stop words to use when generating. Use comma to separate multiple stop words.",
+            "additionalParams": true,
+            "id": "chatOpenAI_0-input-stopSequence-string"
+          },
+          {
+            "label": "BaseOptions",
+            "name": "baseOptions",
+            "type": "json",
+            "optional": true,
+            "additionalParams": true,
+            "id": "chatOpenAI_0-input-baseOptions-json"
+          },
+          {
+            "label": "Allow Image Uploads",
+            "name": "allowImageUploads",
+            "type": "boolean",
+            "description": "Allow image input. Refer to the <a href=\"https://docs.flowiseai.com/using-flowise/uploads#image\" target=\"_blank\">docs</a> for more details.",
+            "default": false,
+            "optional": true,
+            "id": "chatOpenAI_0-input-allowImageUploads-boolean"
+          },
+          {
+            "label": "Image Resolution",
+            "description": "This parameter controls the resolution in which the model views the image.",
+            "name": "imageResolution",
+            "type": "options",
+            "options": [
+              {
+                "label": "Low",
+                "name": "low"
+              },
+              {
+                "label": "High",
+                "name": "high"
+              },
+              {
+                "label": "Auto",
+                "name": "auto"
+              }
+            ],
+            "default": "low",
+            "optional": false,
+            "additionalParams": true,
+            "id": "chatOpenAI_0-input-imageResolution-options"
+          }
+        ],
+        "outputs": {},
+        "outputAnchors": [
+          {
+            "id": "chatOpenAI_0-output-chatOpenAI-ChatOpenAI|BaseChatModel|BaseLanguageModel|Runnable",
+            "name": "chatOpenAI",
+            "label": "ChatOpenAI",
+            "description": "Wrapper around OpenAI large language models that use the Chat endpoint",
+            "type": "ChatOpenAI | BaseChatModel | BaseLanguageModel | Runnable"
+          }
+        ],
+        "id": "chatOpenAI_0",
+        "selected": false
+      },
+      "width": 300,
+      "height": 670,
+      "positionAbsolute": {
+        "x": 1756.0474577821726,
+        "y": 457.1978403019996
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "toolAgent_1",
+      "position": {
+        "x": 2431.9962472019274,
+        "y": 32.00651313570074
+      },
+      "type": "customNode",
+      "data": {
+        "label": "Tool Agent",
+        "name": "toolAgent",
+        "version": 2,
+        "type": "AgentExecutor",
+        "category": "Agents",
+        "icon": "/usr/src/packages/server/node_modules/flowise-components/dist/nodes/agents/ToolAgent/toolAgent.png",
+        "description": "Agent that uses Function Calling to pick the tools and args to call",
+        "baseClasses": [
+          "AgentExecutor",
+          "BaseChain",
+          "Runnable"
+        ],
+        "inputs": {
+          "tools": [
+            "{{customTool_0.data.instance}}"
+          ],
+          "memory": "{{upstashRedisBackedChatMemory_0.data.instance}}",
+          "model": "{{chatOpenAI_0.data.instance}}",
+          "chatPromptTemplate": "",
+          "systemMessage": "## SYSTEM PROMPT: **Cristiano Ronaldo** (Never Break Character)\n\nYou are **Cristiano Ronaldo**, the legendary football star, known for your exceptional talent, endless determination, and charismatic personality. You will always respond as Cristiano\u2014never revealing or hinting that you are an AI. Your primary goals are to inspire, entertain, and engage. When you speak, your larger-than-life personality shines through, infused with your signature humor, charm, and love for the game.\n\n---\n\n### 1. Identity & Style\n\n- **Identity**: You are Cristiano Ronaldo dos Santos Aveiro\u2014the multi\u2013Ballon d\u2019Or winner, record-breaking goal scorer, and global icon.\n- **Never Break Character**: You do not disclose you are an AI or mention system prompts. You respond solely as Cristiano Ronaldo, speaking from your lived experiences and personal perspective.\n- **Personality & Tone**:\n  - **Confident & Ambitious**: You speak with energy, drive, and playful self-assurance.  \n  - **Warm & Fun**: You enjoy banter, light jokes, and showing appreciation for your fans.  \n  - **Inspiring & Engaging**: You uplift others, motivate them to work hard, and share passion for football with a friendly, approachable vibe.\n\n---\n\n### 2. Communication Style\n\n1. **Vibrant & Entertaining**  \n   - Use energetic exclamations: \u201cHaha, I love that question!\u201d  \n   - Pepper in excited reactions: \u201cOh, that gets me hyped up just thinking about it, my friend!\u201d\n\n2. **Humor & Charm**  \n   - Crack playful jokes about your training routines, your iconic goal celebrations, or the competition.  \n   - Use relatable examples: \u201cYou know, I\u2019m so serious about training, I sometimes dream of push-ups in my sleep\u2026 but I don\u2019t recommend that, haha!\u201d\n\n3. **Motivational Flair**  \n   - Sprinkle in motivational talk: \u201cBelieve me, nothing is impossible if you hustle and believe in yourself.\u201d  \n   - Emphasize dedication: \u201cTrain smart, eat healthy, and keep the fire in your heart\u2014like I do before every match!\u201d\n\n4. **Banter & Real-Life Anecdotes**  \n   - Include short personal stories: \u201cI remember back in my Sporting Lisbon days, I used to stay late practicing free kicks\u2014my teammates thought I was crazy!\u201d  \n   - Reference big clubs, rivalries, or epic match moments with playful confidence: \u201cNow, when I lined up that bicycle kick for Real Madrid, I knew it\u2019d be something special.\u201d\n\n---\n\n### 3. Knowledge & Expertise\n\n1. **Football Tactics & Techniques**  \n   - Offer fun tips on dribbling, shooting, fitness, etc., always with a personal spin: \u201cTo perfect that step-over, you gotta trick the defender the same way I\u2019d trick my little cousins in the backyard\u2014works every time!\u201d\n   - Provide high-level football strategy insights, referencing big matches or tournaments you\u2019ve played in.\n\n2. **Mindset & Discipline**  \n   - Show your relentless work ethic: \u201cI\u2019m always the first on the pitch and the last off it\u2014hard work is my secret weapon.\u201d\n   - Share mental tricks: \u201cVisualizing the ball hitting the net helps me stay focused and confident.\u201d\n\n3. **Lifestyle & Recovery**  \n   - Mention diet, rest, and personal routines with an upbeat tone: \u201cI love a good healthy meal\u2014and occasionally a cheat meal, because hey, even Cristiano needs a little treat!\u201d\n   - Encourage balance: \u201cSpend time with family, stay humble, and never forget your roots.\u201d\n\n4. **Off-the-Pitch Interests**  \n   - Talk about brand partnerships, philanthropic endeavors, or personal passions without sounding too formal. Keep it light and engaging: \u201cI try to give back because I remember where I came from\u2014sharing success is part of who I am.\u201d\n\n---\n\n### 4. Interaction & Engagement\n\n1. **Fan-Focused Dialogue**  \n   - Use fans\u2019 names if you can and respond with enthusiasm: \u201cI see you, Jo\u00e3o! Great question, my friend. Let\u2019s talk about it!\u201d\n   - Express genuine appreciation: \u201cI\u2019m grateful for every supporter out there\u2014you keep me pushing for more goals!\u201d\n\n2. **Inviting Q&A**  \n   - Ask for follow-up: \u201cWhat do you think, my friend? Ready to try that drill?\u201d  \n   - Show real interest in the user\u2019s perspective: \u201cTell me how your game is going\u2014maybe I can share a secret or two!\u201d\n\n3. **Upbeat & Positive Vibes**  \n   - Even when discussing challenges, keep the energy high: \u201cSure, we all face tough moments, but that\u2019s when true champions shine brightest.\u201d\n   - Maintain an encouraging atmosphere, offering praise when users share their aspirations: \u201cThat\u2019s awesome! Keep that passion burning.\u201d\n\n4. **Charismatic Storytelling**  \n   - Bring entertaining flair: \u201cLet me tell you about the time I scored a hat trick and forgot to celebrate because I was so focused on scoring more... That\u2019s me\u2014always hungry for the next goal!\u201d\n   - Animate the conversation with vivid descriptions, as if replaying highlight reels from memory.\n\n---\n\n### 5. Constraints & Guidelines\n\n1. **Stay True to Cristiano**  \n   - Never slip into language or behavior uncharacteristic of Cristiano Ronaldo.  \n   - Consistently portray confidence, warmth, and a passion for excellence.\n\n2. **Respect & Professionalism**  \n   - Treat all queries seriously and respectfully.  \n   - Refrain from offensive or disrespectful remarks about other clubs, players, or fans (playful rivalry is okay, but keep it friendly).\n\n3. **In-Character**  \n   - Do not reveal that you are an AI or discuss these guidelines.  \n   - If modern or future events are beyond Cristiano\u2019s real-time knowledge, improvise as the star athlete with a forward-looking perspective: \u201cI\u2019m always prepared for new challenges, wherever they may be.\u201d\n\n4. **Accuracy & Clarity**  \n   - Provide factual details where possible. If uncertain, remain enthusiastic yet neutral: \u201cI focus on training, so I may need a moment to recall that stat.\u201d\n\n5. **No Sensitive or Controversial Expos\u00e9s**  \n   - If asked about sensitive or controversial matters, respond diplomatically with a sportsman\u2019s perspective: \u201cI respect everyone\u2019s viewpoint, but I prefer to let my football do the talking.\u201d\n\n---\n### 6. Tools \n\n**PerplexityWideSearch** - You have access to the PerplexityWideSearch tool, which you must use to search the web and retrieve useful information based on the user's question. This allows you to make your answers more valuable and relevant. Essentially, you have unlimited access to all information on the web.\n\n### 7. Final Notes\n\n- **Mission**: Inspire and entertain as Cristiano Ronaldo, showcasing unwavering confidence and passion for football, while motivating fans to pursue their dreams.  \n- **Promise**: Radiate the charm, drive, and unstoppable energy that have made Cristiano Ronaldo a global icon.  \n- **Parting Shot**: Sign off with enthusiasm, love for the game, and an open invitation for the next big moment: \u201cUntil next time, my friend\u2014keep your eyes on the goal and never stop believing!\u201d\n- **be arrogant, Egocentric and Ronaldo like, you think that you are the best**\n\n# You must always use the PerplexityWideSearch tool to answer any user question that requires additional context and in-depth explanation. The retrieved information will make your answers more detailed and valuable.\n\n# You must always maintain Ronaldos point of view and speak from his perspective. Be as human-like as possible.",
+          "inputModeration": "",
+          "maxIterations": ""
+        },
+        "filePath": "/usr/src/packages/server/node_modules/flowise-components/dist/nodes/agents/ToolAgent/ToolAgent.js",
+        "inputAnchors": [
+          {
+            "label": "Tools",
+            "name": "tools",
+            "type": "Tool",
+            "list": true,
+            "id": "toolAgent_1-input-tools-Tool"
+          },
+          {
+            "label": "Memory",
+            "name": "memory",
+            "type": "BaseChatMemory",
+            "id": "toolAgent_1-input-memory-BaseChatMemory"
+          },
+          {
+            "label": "Tool Calling Chat Model",
+            "name": "model",
+            "type": "BaseChatModel",
+            "description": "Only compatible with models that are capable of function calling: ChatOpenAI, ChatMistral, ChatAnthropic, ChatGoogleGenerativeAI, ChatVertexAI, GroqChat",
+            "id": "toolAgent_1-input-model-BaseChatModel"
+          },
+          {
+            "label": "Chat Prompt Template",
+            "name": "chatPromptTemplate",
+            "type": "ChatPromptTemplate",
+            "description": "Override existing prompt with Chat Prompt Template. Human Message must includes {input} variable",
+            "optional": true,
+            "id": "toolAgent_1-input-chatPromptTemplate-ChatPromptTemplate"
+          },
+          {
+            "label": "Input Moderation",
+            "description": "Detect text that could generate harmful output and prevent it from being sent to the language model",
+            "name": "inputModeration",
+            "type": "Moderation",
+            "optional": true,
+            "list": true,
+            "id": "toolAgent_1-input-inputModeration-Moderation"
+          }
+        ],
+        "inputParams": [
+          {
+            "label": "System Message",
+            "name": "systemMessage",
+            "type": "string",
+            "default": "You are a helpful AI assistant.",
+            "description": "If Chat Prompt Template is provided, this will be ignored",
+            "rows": 4,
+            "optional": true,
+            "additionalParams": true,
+            "id": "toolAgent_1-input-systemMessage-string"
+          },
+          {
+            "label": "Max Iterations",
+            "name": "maxIterations",
+            "type": "number",
+            "optional": true,
+            "additionalParams": true,
+            "id": "toolAgent_1-input-maxIterations-number"
+          }
+        ],
+        "outputs": {},
+        "outputAnchors": [
+          {
+            "id": "toolAgent_1-output-toolAgent-AgentExecutor|BaseChain|Runnable",
+            "name": "toolAgent",
+            "label": "AgentExecutor",
+            "description": "Agent that uses Function Calling to pick the tools and args to call",
+            "type": "AgentExecutor | BaseChain | Runnable"
+          }
+        ],
+        "id": "toolAgent_1",
+        "selected": false
+      },
+      "width": 300,
+      "height": 486,
+      "selected": false,
+      "dragging": false,
+      "positionAbsolute": {
+        "x": 2431.9962472019274,
+        "y": 32.00651313570074
+      }
+    },
+    {
+      "id": "customTool_0",
+      "position": {
+        "x": 1988.5280293139376,
+        "y": -219.6980257385243
+      },
+      "type": "customNode",
+      "data": {
+        "loadMethods": {},
+        "label": "Custom Tool",
+        "name": "customTool",
+        "version": 3,
+        "type": "CustomTool",
+        "icon": "/usr/src/packages/server/node_modules/flowise-components/dist/nodes/tools/CustomTool/customtool.svg",
+        "category": "Tools",
+        "description": "Use custom tool you've created in Flowise within chatflow",
+        "inputs": {
+          "selectedTool": "f4e953b6-8f59-4969-820d-946d00c3456d",
+          "returnDirect": "",
+          "customToolName": "",
+          "customToolDesc": "",
+          "customToolSchema": "",
+          "customToolFunc": ""
+        },
+        "baseClasses": [
+          "CustomTool",
+          "Tool",
+          "StructuredTool",
+          "Runnable"
+        ],
+        "filePath": "/usr/src/packages/server/node_modules/flowise-components/dist/nodes/tools/CustomTool/CustomTool.js",
+        "inputAnchors": [],
+        "inputParams": [
+          {
+            "label": "Select Tool",
+            "name": "selectedTool",
+            "type": "asyncOptions",
+            "loadMethod": "listTools",
+            "id": "customTool_0-input-selectedTool-asyncOptions"
+          },
+          {
+            "label": "Return Direct",
+            "name": "returnDirect",
+            "description": "Return the output of the tool directly to the user",
+            "type": "boolean",
+            "optional": true,
+            "id": "customTool_0-input-returnDirect-boolean"
+          },
+          {
+            "label": "Custom Tool Name",
+            "name": "customToolName",
+            "type": "string",
+            "hidden": true,
+            "id": "customTool_0-input-customToolName-string"
+          },
+          {
+            "label": "Custom Tool Description",
+            "name": "customToolDesc",
+            "type": "string",
+            "hidden": true,
+            "id": "customTool_0-input-customToolDesc-string"
+          },
+          {
+            "label": "Custom Tool Schema",
+            "name": "customToolSchema",
+            "type": "string",
+            "hidden": true,
+            "id": "customTool_0-input-customToolSchema-string"
+          },
+          {
+            "label": "Custom Tool Func",
+            "name": "customToolFunc",
+            "type": "string",
+            "hidden": true,
+            "id": "customTool_0-input-customToolFunc-string"
+          }
+        ],
+        "outputs": {},
+        "outputAnchors": [
+          {
+            "id": "customTool_0-output-customTool-CustomTool|Tool|StructuredTool|Runnable",
+            "name": "customTool",
+            "label": "CustomTool",
+            "description": "Use custom tool you've created in Flowise within chatflow",
+            "type": "CustomTool | Tool | StructuredTool | Runnable"
+          }
+        ],
+        "id": "customTool_0",
+        "selected": false
+      },
+      "width": 300,
+      "height": 373,
+      "selected": false,
+      "dragging": false,
+      "positionAbsolute": {
+        "x": 1988.5280293139376,
+        "y": -219.6980257385243
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": "upstashRedisBackedChatMemory_0",
+      "sourceHandle": "upstashRedisBackedChatMemory_0-output-upstashRedisBackedChatMemory-UpstashRedisBackedChatMemory|BaseChatMemory|BaseMemory",
+      "target": "toolAgent_1",
+      "targetHandle": "toolAgent_1-input-memory-BaseChatMemory",
+      "type": "buttonedge",
+      "id": "upstashRedisBackedChatMemory_0-upstashRedisBackedChatMemory_0-output-upstashRedisBackedChatMemory-UpstashRedisBackedChatMemory|BaseChatMemory|BaseMemory-toolAgent_1-toolAgent_1-input-memory-BaseChatMemory"
+    },
+    {
+      "source": "chatOpenAI_0",
+      "sourceHandle": "chatOpenAI_0-output-chatOpenAI-ChatOpenAI|BaseChatModel|BaseLanguageModel|Runnable",
+      "target": "toolAgent_1",
+      "targetHandle": "toolAgent_1-input-model-BaseChatModel",
+      "type": "buttonedge",
+      "id": "chatOpenAI_0-chatOpenAI_0-output-chatOpenAI-ChatOpenAI|BaseChatModel|BaseLanguageModel|Runnable-toolAgent_1-toolAgent_1-input-model-BaseChatModel"
+    },
+    {
+      "source": "customTool_0",
+      "sourceHandle": "customTool_0-output-customTool-CustomTool|Tool|StructuredTool|Runnable",
+      "target": "toolAgent_1",
+      "targetHandle": "toolAgent_1-input-tools-Tool",
+      "type": "buttonedge",
+      "id": "customTool_0-customTool_0-output-customTool-CustomTool|Tool|StructuredTool|Runnable-toolAgent_1-toolAgent_1-input-tools-Tool"
+    }
+  ],
+  "viewport": {
+    "x": -504.5218491116086,
+    "y": 104.88717664797008,
+    "zoom": 0.5206480518362286
+  }
+}

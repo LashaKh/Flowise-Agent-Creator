@@ -1,0 +1,414 @@
+openapi: 3.0.3
+info:
+  title: AI Persona Builder API
+  description: |
+    API for creating and managing AI persona chatflows on Flowise.
+    All endpoints require authentication via Supabase Auth JWT.
+  version: 1.0.0
+  contact:
+    name: MediMindAI
+
+servers:
+  - url: https://wlvfilxtvqjzwqjhfcdk.supabase.co/functions/v1
+    description: Supabase Edge Functions (Production)
+  - url: http://localhost:54321/functions/v1
+    description: Supabase Edge Functions (Local)
+
+security:
+  - BearerAuth: []
+
+paths:
+  /personas:
+    get:
+      summary: List user's personas
+      description: Retrieve all personas created by the authenticated user
+      operationId: listPersonas
+      tags:
+        - Personas
+      parameters:
+        - name: status
+          in: query
+          description: Filter by persona status
+          schema:
+            type: string
+            enum: [active, creating, failed]
+        - name: limit
+          in: query
+          description: Maximum number of results
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - name: offset
+          in: query
+          description: Pagination offset
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of personas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Persona'
+                  total:
+                    type: integer
+                    description: Total count of personas
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      summary: Create a new persona
+      description: |
+        Creates a new AI persona chatflow on Flowise.
+        This operation:
+        1. Generates a system prompt using Gemini 2.5 Pro
+        2. Creates a Flowise chatflow with the persona configuration
+        3. Stores the persona record in the database
+      operationId: createPersona
+      tags:
+        - Personas
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePersonaRequest'
+      responses:
+        '201':
+          description: Persona created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Persona'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /personas/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Persona UUID
+        schema:
+          type: string
+          format: uuid
+
+    get:
+      summary: Get persona details
+      description: Retrieve details of a specific persona
+      operationId: getPersona
+      tags:
+        - Personas
+      responses:
+        '200':
+          description: Persona details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Persona'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    patch:
+      summary: Update persona
+      description: Update persona settings or system prompt
+      operationId: updatePersona
+      tags:
+        - Personas
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePersonaRequest'
+      responses:
+        '200':
+          description: Persona updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Persona'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      summary: Delete persona
+      description: |
+        Soft-deletes the persona from the database and removes
+        the chatflow from Flowise
+      operationId: deletePersona
+      tags:
+        - Personas
+      responses:
+        '204':
+          description: Persona deleted successfully
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /personas/{id}/regenerate-prompt:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Persona UUID
+        schema:
+          type: string
+          format: uuid
+
+    post:
+      summary: Regenerate system prompt
+      description: |
+        Regenerate the system prompt for an existing persona
+        using Gemini 2.5 Pro
+      operationId: regeneratePrompt
+      tags:
+        - Personas
+      responses:
+        '200':
+          description: Prompt regenerated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  systemPrompt:
+                    type: string
+                    description: Newly generated system prompt
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /generate-prompt:
+    post:
+      summary: Generate system prompt (preview)
+      description: |
+        Generate a system prompt for a persona without creating
+        the chatflow. Useful for previewing before creation.
+      operationId: generatePrompt
+      tags:
+        - Prompts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+              properties:
+                name:
+                  type: string
+                  description: Famous person's name
+                  example: "Albert Einstein"
+      responses:
+        '200':
+          description: Generated system prompt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  systemPrompt:
+                    type: string
+                  metadata:
+                    type: object
+                    properties:
+                      knowledgeAreas:
+                        type: array
+                        items:
+                          type: string
+                      era:
+                        type: string
+                      profession:
+                        type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Supabase Auth JWT token
+
+  schemas:
+    Persona:
+      type: object
+      required:
+        - id
+        - name
+        - chatflowId
+        - systemPrompt
+        - apiEndpoint
+        - status
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier
+        name:
+          type: string
+          description: Famous person's name
+          example: "Albert Einstein"
+        chatflowId:
+          type: string
+          description: Flowise chatflow identifier
+        systemPrompt:
+          type: string
+          description: AI persona system prompt
+        apiEndpoint:
+          type: string
+          format: uri
+          description: Full prediction API URL
+          example: "https://flowise-2-0.onrender.com/api/v1/prediction/abc123"
+        settings:
+          $ref: '#/components/schemas/PersonaSettings'
+        status:
+          type: string
+          enum: [creating, active, failed, deleted]
+          description: Current status of the persona
+        errorMessage:
+          type: string
+          nullable: true
+          description: Error details if status is 'failed'
+        createdAt:
+          type: string
+          format: date-time
+          description: Creation timestamp
+        updatedAt:
+          type: string
+          format: date-time
+          description: Last update timestamp
+
+    PersonaSettings:
+      type: object
+      properties:
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.7
+          description: Model temperature setting
+        modelName:
+          type: string
+          default: "gemini-2.5-flash"
+          description: Chat model used by the persona
+        customInstructions:
+          type: string
+          maxLength: 2000
+          description: Additional user-provided instructions
+
+    CreatePersonaRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Famous person's name
+          example: "Albert Einstein"
+        customInstructions:
+          type: string
+          maxLength: 2000
+          description: Optional additional instructions for the persona
+
+    UpdatePersonaRequest:
+      type: object
+      properties:
+        systemPrompt:
+          type: string
+          description: Updated system prompt
+        settings:
+          $ref: '#/components/schemas/PersonaSettings'
+
+    Error:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: Error code for programmatic handling
+        message:
+          type: string
+          description: Human-readable error message
+        details:
+          type: object
+          description: Additional error context
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: "VALIDATION_ERROR"
+            message: "Please enter a name for your persona"
+
+    Unauthorized:
+      description: Authentication required or invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: "UNAUTHORIZED"
+            message: "Your session expired. Please sign in again."
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: "NOT_FOUND"
+            message: "Persona not found"
+
+    ServiceUnavailable:
+      description: External service (Flowise) unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: "SERVICE_UNAVAILABLE"
+            message: "Flowise is temporarily unavailable. Please try again."
+
+tags:
+  - name: Personas
+    description: AI persona management operations
+  - name: Prompts
+    description: System prompt generation utilities

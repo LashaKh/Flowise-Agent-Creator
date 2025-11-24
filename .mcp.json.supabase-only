@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "supabase_flowise": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@supabase/mcp-server-supabase@latest",
+        "--access-token",
+        "sbp_1cfb240646392144378ac29c396812e1e8fb6b4f"
+      ],
+      "env": {}
+    }
+  }
+}
