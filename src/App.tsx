@@ -57,7 +57,7 @@ function App() {
 
   // Handle sign out
   const handleSignOut = async () => {
-    const { error } = await supabase.auth.signOut();
+    const { error } = await supabase.auth.signOut({ scope: 'local' });
     if (error) {
       toast.error('Failed to sign out');
     } else {
@@ -156,74 +156,137 @@ function App() {
         <Toaster position="top-right" />
 
         {/* Header */}
-        <header className="relative glass-strong border-b border-cosmic-cyan/20 overflow-hidden">
-          {/* Animated Background Layer */}
-          <div className="absolute inset-0 opacity-30 pointer-events-none">
-            <div className="absolute top-0 left-1/4 w-64 h-64 bg-cosmic-cyan/20 rounded-full blur-3xl animate-float"></div>
-            <div className="absolute top-0 right-1/4 w-48 h-48 bg-cosmic-purple/20 rounded-full blur-3xl animate-float" style={{animationDelay: '2s'}}></div>
+        <header className="relative overflow-hidden header-premium">
+          {/* Multi-layer Background */}
+          <div className="absolute inset-0 header-bg-gradient"></div>
+
+          {/* Geometric Art Deco Pattern */}
+          <div className="absolute inset-0 header-pattern opacity-[0.03]"></div>
+
+          {/* Ambient Glow Orbs */}
+          <div className="absolute inset-0 overflow-hidden pointer-events-none">
+            <div className="absolute -top-20 -left-20 w-80 h-80 bg-cosmic-cyan/8 rounded-full blur-[100px] animate-float"></div>
+            <div className="absolute -top-10 right-1/4 w-60 h-60 bg-cosmic-purple/10 rounded-full blur-[80px] animate-float" style={{animationDelay: '3s'}}></div>
+            <div className="absolute top-0 right-0 w-40 h-40 bg-cosmic-magenta/6 rounded-full blur-[60px] animate-float" style={{animationDelay: '1.5s'}}></div>
           </div>
 
-          <div className="max-w-7xl mx-auto px-6 py-5 relative z-10">
+          {/* Top Accent Line */}
+          <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-cosmic-cyan/40 to-transparent"></div>
+
+          <div className="max-w-7xl mx-auto px-8 py-6 relative z-10">
             <div className="flex items-center justify-between">
+
               {/* Logo & Brand Section */}
-              <div className="flex items-center gap-5 animate-fade-in">
-                {/* Magic Worlds Logo */}
-                <div className="relative group">
-                  <div className="absolute inset-0 bg-gradient-to-br from-cosmic-cyan to-cosmic-purple rounded-2xl blur-xl opacity-40 group-hover:opacity-60 transition-opacity"></div>
-                  <div className="relative w-16 h-16 bg-white/5 backdrop-blur-sm rounded-2xl p-2 border border-white/10 group-hover:border-cosmic-cyan/30 transition-all">
-                    <img
-                      src="https://www.themagicworlds.com/_next/image?url=%2Fimages%2Flogo%2Flogo.png&w=640&q=75"
-                      alt="Magic Worlds Logo"
-                      className="w-full h-full object-contain"
-                    />
-                    {/* Animated Particles */}
-                    <div className="absolute -top-1 -right-1 w-2 h-2 bg-cosmic-cyan rounded-full animate-ping"></div>
-                    <div className="absolute -bottom-1 -left-1 w-2 h-2 bg-cosmic-magenta rounded-full animate-ping" style={{animationDelay: '1s'}}></div>
+              <div className="flex items-center gap-6 animate-fade-in">
+                {/* Enhanced Logo Container - 20% larger */}
+                <div className="relative group cursor-pointer">
+                  {/* Outer Glow Ring */}
+                  <div className="absolute -inset-3 bg-gradient-to-br from-cosmic-cyan/20 via-cosmic-purple/10 to-cosmic-magenta/20 rounded-3xl blur-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+
+                  {/* Logo Frame with Art Deco corners */}
+                  <div className="relative">
+                    {/* Corner Accents */}
+                    <div className="absolute -top-1 -left-1 w-4 h-4 border-t-2 border-l-2 border-cosmic-cyan/50 rounded-tl-lg"></div>
+                    <div className="absolute -top-1 -right-1 w-4 h-4 border-t-2 border-r-2 border-cosmic-cyan/50 rounded-tr-lg"></div>
+                    <div className="absolute -bottom-1 -left-1 w-4 h-4 border-b-2 border-l-2 border-cosmic-magenta/50 rounded-bl-lg"></div>
+                    <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-2 border-r-2 border-cosmic-magenta/50 rounded-br-lg"></div>
+
+                    {/* Main Logo Container - increased from 64px to 77px (20% larger) */}
+                    <div className="relative w-[77px] h-[77px] bg-gradient-to-br from-white/[0.08] to-white/[0.02] backdrop-blur-xl rounded-2xl p-2.5 border border-white/10 group-hover:border-cosmic-cyan/40 transition-all duration-300 group-hover:scale-105">
+                      <img
+                        src="https://www.themagicworlds.com/_next/image?url=%2Fimages%2Flogo%2Flogo.png&w=640&q=75"
+                        alt="Magic Worlds Logo"
+                        className="w-full h-full object-contain drop-shadow-[0_0_20px_rgba(0,240,255,0.3)]"
+                      />
+
+                      {/* Shine Effect */}
+                      <div className="absolute inset-0 bg-gradient-to-br from-white/20 via-transparent to-transparent rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                    </div>
+
+                    {/* Status Indicator */}
+                    <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-gradient-to-br from-emerald-400 to-green-500 rounded-full border-2 border-cosmic-darker flex items-center justify-center">
+                      <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></div>
+                    </div>
                   </div>
                 </div>
 
-                {/* Brand Text */}
-                <div>
-                  <h1 className="text-3xl font-display font-black gradient-text leading-none mb-1 tracking-tight">
-                    Magic Persona Builder
-                  </h1>
-                  <div className="flex items-center gap-2">
-                    <div className="w-1 h-1 rounded-full bg-cosmic-cyan animate-pulse"></div>
-                    <p className="text-xs text-gray-400 font-body uppercase tracking-wider">
-                      Powered by <span className="text-cosmic-cyan font-semibold">Flowise AI</span>
+                {/* Brand Text with enhanced typography */}
+                <div className="flex flex-col">
+                  {/* Main Title */}
+                  <div className="relative">
+                    <h1 className="text-[2rem] font-display font-black leading-none tracking-tight">
+                      <span className="header-title-gradient">Magic Persona</span>
+                      <span className="text-white ml-2">Builder</span>
+                    </h1>
+                    {/* Subtle underline accent */}
+                    <div className="absolute -bottom-1 left-0 w-24 h-[2px] bg-gradient-to-r from-cosmic-cyan to-transparent rounded-full"></div>
+                  </div>
+
+                  {/* Tagline with refined styling */}
+                  <div className="flex items-center gap-3 mt-3">
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-cosmic-cyan animate-pulse"></span>
+                      <span className="w-1 h-1 rounded-full bg-cosmic-purple animate-pulse" style={{animationDelay: '0.5s'}}></span>
+                      <span className="w-0.5 h-0.5 rounded-full bg-cosmic-magenta animate-pulse" style={{animationDelay: '1s'}}></span>
+                    </div>
+                    <p className="text-[11px] text-gray-400 font-body uppercase tracking-[0.2em]">
+                      Powered by <span className="text-cosmic-cyan font-medium">Flowise AI</span>
                     </p>
                   </div>
                 </div>
               </div>
 
-              {/* User Actions Section */}
-              <div className="flex items-center gap-4 animate-fade-in" style={{animationDelay: '0.1s'}}>
-                {/* User Info Badge */}
-                <div className="hidden md:flex items-center gap-3 glass px-4 py-2.5 rounded-xl border border-white/10">
-                  <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cosmic-purple to-cosmic-magenta flex items-center justify-center">
-                    <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                    </svg>
+              {/* User Actions Section - Enhanced */}
+              <div className="flex items-center gap-5 animate-fade-in" style={{animationDelay: '0.15s'}}>
+
+                {/* User Profile Card */}
+                <div className="hidden md:flex items-center gap-4 header-user-card px-5 py-3 rounded-2xl">
+                  {/* Avatar */}
+                  <div className="relative">
+                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cosmic-purple via-cosmic-magenta to-cosmic-cyan p-[2px]">
+                      <div className="w-full h-full rounded-[10px] bg-cosmic-dark flex items-center justify-center">
+                        <svg className="w-5 h-5 text-white/90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                        </svg>
+                      </div>
+                    </div>
+                    {/* Online Indicator */}
+                    <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-400 rounded-full border-2 border-cosmic-dark"></div>
                   </div>
+
+                  {/* User Info */}
                   <div className="text-left">
-                    <p className="text-xs font-display font-semibold text-white leading-none mb-0.5">
+                    <p className="text-sm font-display font-semibold text-white leading-none">
                       {session?.user?.email?.split('@')[0] || 'User'}
                     </p>
-                    <p className="text-xs text-gray-500 font-body">
-                      {personas.length} {personas.length === 1 ? 'Persona' : 'Personas'}
-                    </p>
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <span className="text-[10px] text-cosmic-cyan font-medium uppercase tracking-wider">
+                        {personas.length} {personas.length === 1 ? 'Persona' : 'Personas'}
+                      </span>
+                      <span className="w-1 h-1 rounded-full bg-gray-600"></span>
+                      <span className="text-[10px] text-gray-500 uppercase tracking-wider">Active</span>
+                    </div>
                   </div>
                 </div>
 
-                {/* Sign Out Button */}
+                {/* Divider */}
+                <div className="hidden md:block w-px h-10 bg-gradient-to-b from-transparent via-white/10 to-transparent"></div>
+
+                {/* Sign Out Button - Refined */}
                 <button
                   onClick={handleSignOut}
-                  className="group relative px-5 py-2.5 glass hover:glass-strong rounded-xl border border-white/20 hover:border-cosmic-cyan/50 transition-all overflow-hidden"
+                  className="group relative px-6 py-3 header-signout-btn rounded-xl overflow-hidden"
                 >
-                  <div className="absolute inset-0 bg-gradient-to-r from-cosmic-cyan/0 via-cosmic-cyan/10 to-cosmic-cyan/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700"></div>
-                  <div className="relative flex items-center gap-2">
-                    <span className="text-sm font-display font-semibold text-white">Sign Out</span>
-                    <svg className="w-4 h-4 text-cosmic-cyan group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  {/* Animated Border */}
+                  <div className="absolute inset-0 rounded-xl border border-white/10 group-hover:border-cosmic-cyan/30 transition-colors duration-300"></div>
+
+                  {/* Hover Gradient Sweep */}
+                  <div className="absolute inset-0 bg-gradient-to-r from-cosmic-cyan/0 via-cosmic-cyan/5 to-cosmic-cyan/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700"></div>
+
+                  {/* Button Content */}
+                  <div className="relative flex items-center gap-2.5">
+                    <span className="text-sm font-display font-semibold text-white/90 group-hover:text-white transition-colors">Sign Out</span>
+                    <svg className="w-4 h-4 text-gray-400 group-hover:text-cosmic-cyan group-hover:translate-x-0.5 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
                     </svg>
                   </div>
@@ -232,8 +295,11 @@ function App() {
             </div>
           </div>
 
-          {/* Bottom Glow Line */}
-          <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-cosmic-cyan to-transparent opacity-50"></div>
+          {/* Bottom Border with Gradient */}
+          <div className="absolute bottom-0 left-0 right-0">
+            <div className="h-px bg-gradient-to-r from-transparent via-cosmic-cyan/30 to-transparent"></div>
+            <div className="h-[1px] bg-gradient-to-r from-transparent via-white/5 to-transparent"></div>
+          </div>
         </header>
 
         {/* Tab Navigation */}

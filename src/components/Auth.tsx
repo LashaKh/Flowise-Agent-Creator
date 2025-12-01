@@ -75,9 +75,18 @@ export function Auth() {
         if (signUpError) {
           setError(signUpError.message);
         } else {
-          toast.success('Account created! Please check your email to confirm.');
-          setEmail('');
-          setPassword('');
+          // Auto sign-in after successful signup
+          const { error: signInError } = await supabase.auth.signInWithPassword({
+            email: email.trim(),
+            password,
+          });
+
+          if (signInError) {
+            toast.success('Account created! Please sign in.');
+            setMode('signin');
+          } else {
+            toast.success('Account created! Welcome!');
+          }
         }
       } else {
         const { error: signInError } = await supabase.auth.signInWithPassword({
