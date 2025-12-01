@@ -203,10 +203,6 @@ function App() {
                       <div className="absolute inset-0 bg-gradient-to-br from-white/20 via-transparent to-transparent rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity"></div>
                     </div>
 
-                    {/* Status Indicator */}
-                    <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-gradient-to-br from-emerald-400 to-green-500 rounded-full border-2 border-cosmic-darker flex items-center justify-center">
-                      <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></div>
-                    </div>
                   </div>
                 </div>
 
