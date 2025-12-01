@@ -6,6 +6,8 @@ interface PersonaCardProps {
   persona: Persona;
   onSelect: (persona: Persona) => void;
   onDelete: (personaId: string) => void;
+  /** Optional callback to open chat with this persona */
+  onChat?: (persona: Persona) => void;
 }
 
 /**
@@ -38,7 +40,7 @@ function formatDate(date: Date): string {
 /**
  * Card component for displaying a single persona
  */
-export function PersonaCard({ persona, onSelect, onDelete }: PersonaCardProps) {
+export function PersonaCard({ persona, onSelect, onDelete, onChat }: PersonaCardProps) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const statusStyles = getStatusStyles(persona.status);
 
@@ -88,6 +90,19 @@ export function PersonaCard({ persona, onSelect, onDelete }: PersonaCardProps) {
           >
             View Details
           </button>
+          {/* Chat Button - only show for active personas */}
+          {onChat && persona.status === 'active' && (
+            <button
+              onClick={() => onChat(persona)}
+              className="px-4 py-2.5 text-sm font-display font-semibold glass hover:glass-strong border border-cosmic-cyan/30 text-cosmic-cyan hover:text-white rounded-xl transition-all hover:scale-105 flex items-center gap-2"
+              title="Chat with this persona"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              </svg>
+              Chat
+            </button>
+          )}
           <button
             onClick={handleDeleteClick}
             className="px-4 py-2.5 text-sm font-display font-semibold glass hover:glass-strong border border-red-500/30 text-red-400 hover:text-red-300 rounded-xl transition-all hover:scale-105"

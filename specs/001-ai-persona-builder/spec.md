@@ -11,6 +11,16 @@ complete AI persona chatflow on a Render-hosted Flowise instance. The created
 chatflow includes a Tool Agent with memory and Gemini chat model, outputting
 the API endpoint and configuration for immediate use or further customization.
 
+## Clarifications
+
+### Session 2025-12-01
+
+- Q: Where should the chat window appear in the interface? → A: Full-page chat section in navigation (Create / Personas / Chat)
+- Q: Should chat history persist across browser sessions? → A: Session only (in-memory, cleared on page leave/refresh)
+- Q: When switching personas mid-conversation, what happens to current chat? → A: Clear chat and start fresh with new persona
+- Q: How should UI handle Flowise API failures during chat? → A: Auto-retry up to 3 times, then show error with retry button
+- Q: How can users access Chat for a specific persona? → A: Both Chat nav section AND "Chat" quick action button on each persona card
+
 ## Constitution Alignment
 
 This feature aligns with the following principles:
@@ -61,6 +71,25 @@ This feature aligns with the following principles:
 1. User opens application (authenticated via Supabase)
 2. User sees list of previously created personas
 3. User can view details, copy endpoint, or delete persona
+
+### Tertiary Scenario: Test Persona via Chat
+
+**Actor:** End user wanting to test a created persona
+
+**Flow:**
+1. User navigates to Chat section (or clicks "Chat" on a persona card)
+2. User selects a persona from the dropdown (or persona is pre-selected from card click)
+3. User types a message and sends it
+4. System displays loading indicator while waiting for response
+5. System streams the persona's response in real-time
+6. User continues conversation to verify persona behavior
+7. User can switch to a different persona (clears chat and starts fresh)
+
+**Acceptance Scenarios:**
+- Message sent successfully shows streamed response
+- API failure auto-retries up to 3 times before showing error with retry button
+- Switching personas clears current conversation
+- No persona selected shows prompt to select one
 
 ### Edge Cases
 
@@ -164,6 +193,21 @@ The system MUST maintain a history of created personas for authenticated users.
 - Users can delete personas (removes from Flowise and database)
 - Pagination for users with many personas
 
+### FR-7: Chat Window
+
+The system MUST provide a dedicated Chat section in the main navigation (alongside Create and Personas) for testing conversations with created agents.
+
+**Acceptance Criteria:**
+- Chat section accessible via main navigation as a full-page view
+- User can select any active persona from a dropdown/list before chatting
+- Chat interface displays conversation messages in a standard chat format
+- Messages sent to the selected persona's Flowise prediction endpoint
+- Real-time streaming responses displayed as they arrive
+- Conversation history visible within the current session (in-memory only, cleared on page leave/refresh)
+- Switching personas clears the current chat and starts a fresh conversation
+- On API failure: auto-retry up to 3 times, then show error message with manual retry button
+- "Chat" quick action button on each persona card navigates to Chat section with that persona pre-selected
+
 ---
 
 ## Non-Functional Requirements
@@ -213,6 +257,10 @@ So that I can fine-tune the persona's behavior.
 As a returning user,
 I want to see all my previously created personas,
 So that I can manage, reuse, or delete them.
+
+As an end user,
+I want to test my created personas in a built-in chat window,
+So that I can verify their responses before integrating them externally.
 ```
 
 ---
@@ -266,7 +314,7 @@ Standard Supabase authentication user.
 - Multiple AI model selection (Gemini only for MVP)
 - Collaborative features (sharing personas between users)
 - Chatbot embedding/widget generation
-- Conversation history viewing/export
+- Persistent conversation history export (session-only chat history is in scope)
 - Billing or usage metering
 - Mobile native applications
 

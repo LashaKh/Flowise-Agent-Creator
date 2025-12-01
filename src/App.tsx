@@ -10,11 +10,12 @@ import { PersonaList } from './components/PersonaList';
 import { SettingsPanel } from './components/SettingsPanel';
 import { ApiEndpointDisplay } from './components/ApiEndpointDisplay';
 import { DeleteConfirmation } from './components/DeleteConfirmation';
+import { ChatWindow } from './components/ChatWindow';
 import { usePersonas } from './hooks/usePersonas';
 import { useDeletePersona } from './hooks/useDeletePersona';
 import type { Persona } from './types';
 
-type Tab = 'create' | 'personas';
+type Tab = 'create' | 'personas' | 'chat';
 
 function App() {
   // Auth state
@@ -25,6 +26,9 @@ function App() {
   const [activeTab, setActiveTab] = useState<Tab>('create');
   const [selectedPersona, setSelectedPersona] = useState<Persona | null>(null);
   const [createdPersona, setCreatedPersona] = useState<Persona | null>(null);
+
+  // Chat state
+  const [chatPersona, setChatPersona] = useState<Persona | null>(null);
 
   // Delete confirmation state
   const [deleteTarget, setDeleteTarget] = useState<Persona | null>(null);
@@ -115,6 +119,12 @@ function App() {
   // Handle back from persona detail view
   const handleBackToList = () => {
     setSelectedPersona(null);
+  };
+
+  // Handle chat from PersonaCard - navigate to chat tab with persona pre-selected
+  const handleChatPersona = (persona: Persona) => {
+    setChatPersona(persona);
+    setActiveTab('chat');
   };
 
   // Show loading state while checking auth
@@ -265,6 +275,24 @@ function App() {
                 <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-cosmic-cyan to-cosmic-purple glow-cyan"></div>
               )}
             </button>
+            <button
+              onClick={() => setActiveTab('chat')}
+              className={`px-8 py-4 font-display font-semibold border-b-2 transition-all relative group ${
+                activeTab === 'chat'
+                  ? 'border-cosmic-cyan text-cosmic-cyan'
+                  : 'border-transparent text-gray-400 hover:text-white hover:border-white/30'
+              }`}
+            >
+              <span className="relative z-10 flex items-center gap-2">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                </svg>
+                Chat
+              </span>
+              {activeTab === 'chat' && (
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-cosmic-cyan to-cosmic-purple glow-cyan"></div>
+              )}
+            </button>
           </div>
         </div>
 
@@ -411,9 +439,23 @@ function App() {
                     isLoading={isPersonasLoading}
                     onSelect={handleSelectPersona}
                     onDelete={handleDeleteRequest}
+                    onChat={handleChatPersona}
                   />
                 </section>
               )}
+            </div>
+          )}
+
+          {/* Chat Tab */}
+          {activeTab === 'chat' && (
+            <div className="animate-slide-up">
+              <ChatWindow
+                personas={personas}
+                selectedPersona={chatPersona}
+                onSelectPersona={(persona) => setChatPersona(persona)}
+                isLoadingPersonas={isPersonasLoading}
+                onNavigateToCreate={() => setActiveTab('create')}
+              />
             </div>
           )}
         </main>

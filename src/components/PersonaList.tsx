@@ -6,6 +6,8 @@ interface PersonaListProps {
   isLoading: boolean;
   onSelect: (persona: Persona) => void;
   onDelete: (personaId: string) => void;
+  /** Optional callback to open chat with a persona */
+  onChat?: (persona: Persona) => void;
 }
 
 /**
@@ -67,7 +69,7 @@ function EmptyState() {
 /**
  * Grid layout component for displaying persona cards
  */
-export function PersonaList({ personas, isLoading, onSelect, onDelete }: PersonaListProps) {
+export function PersonaList({ personas, isLoading, onSelect, onDelete, onChat }: PersonaListProps) {
   if (isLoading) {
     return <LoadingSkeleton />;
   }
@@ -84,6 +86,7 @@ export function PersonaList({ personas, isLoading, onSelect, onDelete }: Persona
           persona={persona}
           onSelect={onSelect}
           onDelete={onDelete}
+          onChat={onChat}
         />
       ))}
     </div>

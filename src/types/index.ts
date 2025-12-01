@@ -74,3 +74,22 @@ export function transformPersonaRow(row: PersonaRow): Persona {
     updatedAt: new Date(row.updated_at),
   };
 }
+
+// Chat message in conversation
+export interface ChatMessage {
+  id: string;                    // UUID for React key
+  role: 'user' | 'assistant';   // Message sender
+  content: string;              // Message text
+  timestamp: Date;              // When message was sent/received
+  isStreaming?: boolean;        // True while assistant response is streaming
+  error?: string;               // Error message if send failed
+}
+
+// Chat state (React component state)
+export interface ChatState {
+  selectedPersonaId: string | null;  // Currently selected persona
+  messages: ChatMessage[];           // Conversation history (session-only)
+  isLoading: boolean;                // True while waiting for response
+  retryCount: number;                // Current retry attempt (0-3)
+  lastFailedMessage?: string;        // Message to retry on manual retry
+}

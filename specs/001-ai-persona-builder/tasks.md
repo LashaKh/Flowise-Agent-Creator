@@ -4,17 +4,18 @@
 
 **Feature**: Automatic AI Persona Chatflow Generator for Flowise
 **Branch**: `1-ai-persona-builder`
-**Total Tasks**: 42
-**Estimated Phases**: 7
+**Total Tasks**: 54
+**Estimated Phases**: 8
 
 ## User Story Summary
 
-| Story | Priority | Description | Task Count |
-|-------|----------|-------------|------------|
-| US1 | P1 | Create persona by name input | 8 |
-| US2 | P2 | Display API endpoint with Python code | 4 |
-| US3 | P3 | Edit system prompt and settings | 6 |
-| US4 | P4 | View and manage persona history | 6 |
+| Story | Priority | Description | Task Count | Status |
+|-------|----------|-------------|------------|--------|
+| US1 | P1 | Create persona by name input | 8 | DONE |
+| US2 | P2 | Display API endpoint with Python code | 4 | DONE |
+| US3 | P3 | Edit system prompt and settings | 6 | DONE |
+| US4 | P4 | View and manage persona history | 6 | DONE |
+| US5 | P5 | Test personas via built-in chat window | 12 | DONE |
 
 ## Dependency Graph
 
@@ -28,18 +29,20 @@ Phase 1 (Setup) ──┐
                   │    │                                     │
                   │    │    ┌────────────────────────────────┤
                   │    │    │                                │
-                  │    │    ├──→ Phase 4 (US2: API Display)  │
+                  │    │    ├──→ Phase 4 (US2: API Display)  │  ✓ DONE
                   │    │    │                                │
-                  │    │    ├──→ Phase 5 (US3: Edit Settings)│
+                  │    │    ├──→ Phase 5 (US3: Edit Settings)│  ✓ DONE
                   │    │    │                                │
-                  │    │    └──→ Phase 6 (US4: History)      │
+                  │    │    ├──→ Phase 6 (US4: History)      │  ✓ DONE
+                  │    │    │                                │
+                  │    │    └──→ Phase 8 (US5: Chat Window)  │  ← NEW
                   │    │                                     │
                   │    └─────────────────────────────────────┘
                   │
-                  └──→ Phase 7 (Polish)
+                  └──→ Phase 7 (Polish) ✓ DONE
 ```
 
-**Note**: US2, US3, US4 can be implemented in parallel after US1 completes.
+**Note**: US5 (Chat Window) can be implemented independently after Phase 7 completes.
 
 ---
 
@@ -375,6 +378,111 @@ Phase 1 (Setup) ──┐
 
 ---
 
+## Phase 8: User Story 5 - Chat Window
+
+**Goal**: Add a dedicated Chat section for testing conversations with created personas
+
+**User Story**: As an end user, I want to test my created personas in a built-in chat window, so that I can verify their responses before integrating them externally.
+
+**Prerequisites**: Phases 1-7 complete (app is functional with auth and persona CRUD)
+
+**Clarifications Applied** (Session 2025-12-01):
+- Full-page Chat section in navigation (Create / Personas / Chat)
+- Session-only chat history (in-memory, cleared on page leave/refresh)
+- Switching personas clears current chat
+- Auto-retry up to 3 times, then show manual retry button
+- "Chat" quick action on persona cards navigates to Chat with persona pre-selected
+
+### Independent Test Criteria
+- [ ] Navigate to Chat tab → persona selector displayed
+- [ ] Select persona → welcome message with persona name shown
+- [ ] Send message → streaming response displayed in real-time
+- [ ] API failure → auto-retry 3x, then show retry button
+- [ ] Switch persona → chat cleared, new welcome message
+- [ ] Click "Chat" on PersonaCard → navigates to Chat with that persona selected
+- [ ] No personas → prompt to create one first
+
+### Tasks
+
+- [X] T043 [US5] Add Chat tab to navigation in `src/App.tsx`
+  - Update `Tab` type to `'create' | 'personas' | 'chat'`
+  - Add third navigation button
+  - Add state for `chatPersona: Persona | null`
+
+- [X] T044 [P] [US5] Create Flowise chat client in `src/lib/flowise-chat.ts`
+  - `sendMessage(chatflowId, message)` function
+  - SSE streaming response parsing
+  - Error handling with typed errors
+  - Use types from `contracts/flowise-chatflow.ts`
+
+- [X] T045 [P] [US5] Create ChatMessage type in `src/types/index.ts`
+  - `id`, `role`, `content`, `timestamp`, `isStreaming`, `error` fields
+  - Add to existing types file
+
+- [X] T046 [US5] Create useChat hook in `src/hooks/useChat.ts`
+  - Manage messages state (in-memory array)
+  - `sendMessage` function with streaming support
+  - Auto-retry logic (3x with exponential backoff: 1s, 2s, 4s)
+  - `clearMessages` on persona switch
+  - `retryLastMessage` for manual retry
+  - Loading and error states
+
+- [X] T047 [P] [US5] Create ChatMessage component in `src/components/ChatMessage.tsx`
+  - User message styling (right-aligned, cosmic-cyan background)
+  - Assistant message styling (left-aligned, glass background)
+  - Streaming indicator (animated dots)
+  - Error state with retry button
+  - Timestamp display
+
+- [X] T048 [US5] Create ChatWindow component in `src/components/ChatWindow.tsx`
+  - Persona selector dropdown (shows active personas only)
+  - Message list with auto-scroll to bottom
+  - Input field with send button
+  - Loading indicator during streaming
+  - Empty states: no persona selected, no messages
+
+- [X] T049 [P] [US5] Create PersonaSelector component in `src/components/PersonaSelector.tsx`
+  - Dropdown/select with active personas
+  - Current persona display with avatar
+  - onChange clears chat (per clarification)
+
+- [X] T050 [US5] Create ChatInput component in `src/components/ChatInput.tsx`
+  - Text input with placeholder
+  - Send button (disabled when empty or loading)
+  - Enter key to send
+  - Shift+Enter for newline
+
+- [X] T051 [US5] Add "Chat" button to PersonaCard in `src/components/PersonaCard.tsx`
+  - Chat icon button in actions row
+  - Only show for 'active' status personas
+  - onClick calls `onChat(persona)` callback
+
+- [X] T052 [US5] Wire up Chat navigation from PersonaCard
+  - Pass `onChat` callback from App.tsx
+  - Handler: set `activeTab='chat'`, set `chatPersona=persona`
+
+- [X] T053 [US5] Handle Chat empty states in `src/components/ChatWindow.tsx`
+  - No personas created: "Create a persona first" with link to Create tab
+  - No persona selected: "Select a persona to start chatting"
+  - Empty conversation: Welcome message with persona name
+
+- [X] T054 [US5] Add responsive design to Chat components
+  - Mobile-friendly chat layout
+  - Collapsible persona selector on mobile
+  - Touch-friendly message input
+  - Proper keyboard behavior on mobile
+
+**Phase 8 Completion Criteria**:
+- Users can navigate to Chat tab
+- Users can select a persona and send messages
+- Streaming responses display in real-time
+- Auto-retry on failures with manual fallback
+- Chat clears when switching personas
+- "Chat" button on PersonaCard works correctly
+- Mobile-responsive layout
+
+---
+
 ## Parallel Execution Opportunities
 
 ### Within Phase 1 (Setup)
@@ -400,20 +508,52 @@ After Phase 3 completes:
   └── Phase 6 (US4)  ┘
 ```
 
+### Within Phase 8 (Chat Window)
+```
+T043 (nav) ──┐
+             ├──→ T044, T045, T047, T049 (parallel: different files)
+             │           │
+             │           └──→ T046 (depends on T044, T045)
+             │                    │
+             │                    └──→ T048 (depends on T046, T047, T049)
+             │                              │
+             └──────────────────────────────┼──→ T050 (parallel with T048)
+                                            │
+                                            ├──→ T051, T052 (after T048)
+                                            │
+                                            └──→ T053, T054 (after T048)
+```
+
+**Recommended Parallel Groups for Phase 8**:
+1. **Group A** (start immediately): T043, T044, T045, T047, T049
+2. **Group B** (after T044, T045): T046
+3. **Group C** (after T046, T047, T049): T048, T050
+4. **Group D** (after T048): T051, T052, T053, T054
+
 ---
 
 ## Implementation Strategy
 
-### MVP Scope (Recommended)
-**Complete Phase 1 + Phase 2 + Phase 3 (US1) only**
-- Minimum viable: User can create a persona
-- Validates core integration (Flowise, Gemini, Supabase)
-- ~22 tasks
+### MVP Scope (Completed)
+**Phases 1-7 are DONE** (42 tasks completed)
+- Full persona CRUD functionality
+- Authentication
+- Settings management
+- Polish and responsive design
 
-### Incremental Delivery
-1. **Week 1**: Phase 1-3 (MVP)
-2. **Week 2**: Phase 4-5 (US2, US3)
-3. **Week 3**: Phase 6-7 (US4, Polish)
+### Next Increment: Chat Window (Phase 8)
+**Complete Phase 8 (US5) - 12 tasks**
+- Built-in chat interface for testing personas
+- Streaming responses
+- Auto-retry on failures
+- Quick access from persona cards
+
+### Estimated Effort for Phase 8
+- **Parallel Group A**: ~2 hours (navigation + types + components scaffold)
+- **Parallel Group B**: ~2 hours (useChat hook with streaming)
+- **Parallel Group C**: ~3 hours (ChatWindow + ChatInput integration)
+- **Parallel Group D**: ~2 hours (PersonaCard button + empty states + responsive)
+- **Total**: ~9 hours with parallel execution
 
 ---
 
@@ -421,11 +561,11 @@ After Phase 3 completes:
 
 | Category | Count | Tasks |
 |----------|-------|-------|
-| **[S]** Simplicity | 8 | T001-T007, T019 |
-| **[A]** API Integration | 12 | T013, T015-T016, T027, T030, T033-T034 |
-| **[U]** UX | 14 | T017, T021-T026, T028, T035-T038, T040-T041 |
+| **[S]** Simplicity | 9 | T001-T007, T019, T043 |
+| **[A]** API Integration | 14 | T013, T015-T016, T027, T030, T033-T034, T044, T046 |
+| **[U]** UX | 22 | T017, T021-T026, T028, T035-T038, T040-T041, T047-T054 |
 | **[X]** Security | 4 | T008-T010, T039 |
-| **[O]** Observability | 4 | T014, T018, T020, T029 |
+| **[O]** Observability | 5 | T014, T018, T020, T029, T046 |
 
 ---
 

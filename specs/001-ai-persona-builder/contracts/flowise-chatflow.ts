@@ -499,3 +499,148 @@ export function buildCreateChatflowRequest(
 export function buildPredictionEndpoint(chatflowId: string): string {
   return `${FLOWISE_CONFIG.baseUrl}/api/v1/prediction/${chatflowId}`;
 }
+
+// ============================================
+// Chat Prediction Types (Phase 5: Chat Window)
+// ============================================
+
+/**
+ * Request body for Flowise prediction API
+ */
+export interface PredictionRequest {
+  question: string;
+  streaming?: boolean;
+  overrideConfig?: {
+    sessionId?: string;
+    temperature?: number;
+  };
+}
+
+/**
+ * Response from Flowise prediction API (non-streaming)
+ */
+export interface PredictionResponse {
+  text: string;
+  sourceDocuments?: unknown[];
+  usedTools?: string[];
+  chatId?: string;
+  chatMessageId?: string;
+}
+
+/**
+ * SSE event structure for streaming responses
+ */
+export interface StreamEvent {
+  event: 'token' | 'end' | 'error' | 'metadata';
+  data: string;
+}
+
+/**
+ * Chat message in conversation (frontend state)
+ */
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: Date;
+  isStreaming?: boolean;
+  error?: string;
+}
+
+/**
+ * Send a prediction request to Flowise
+ * Returns a ReadableStream for SSE streaming responses
+ */
+export async function sendPrediction(
+  chatflowId: string,
+  question: string,
+  streaming: boolean = true,
+  sessionId?: string
+): Promise<Response> {
+  const endpoint = buildPredictionEndpoint(chatflowId);
+
+  const body: PredictionRequest = {
+    question,
+    streaming,
+  };
+
+  // Add sessionId to enable conversation memory
+  if (sessionId) {
+    body.overrideConfig = { sessionId };
+  }
+
+  return fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Parse SSE stream from Flowise prediction response
+ * Yields text chunks as they arrive
+ *
+ * Flowise returns data in this format:
+ * - `message:data:{"event":"start","data":"..."}`
+ * - `message:data:{"event":"token","data":"..."}`
+ * - `message:data:{"event":"end","data":"[DONE]"}`
+ */
+export async function* parseSSEStream(
+  response: Response
+): AsyncGenerator<string, void, unknown> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error('Response body is not readable');
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      buffer += chunk;
+
+      // Process complete messages (each ends with double newline)
+      // Format: message:\ndata:{"event":"token","data":"text"}\n\n
+      const messages = buffer.split(/\n\n/);
+
+      // Keep the last incomplete message in buffer
+      buffer = messages.pop() || '';
+
+      for (const message of messages) {
+        if (!message.trim()) continue;
+
+        // Extract JSON from data: line
+        const dataMatch = message.match(/data:(\{.+\})/);
+        if (!dataMatch) continue;
+
+        try {
+          const parsed = JSON.parse(dataMatch[1]);
+
+          // Check if it's the end event
+          if (parsed.event === 'end' || parsed.data === '[DONE]') {
+            return;
+          }
+
+          // Only yield from 'token' events to avoid duplicates
+          // (start event contains same text as first token)
+          if (parsed.event === 'token') {
+            if (parsed.data && typeof parsed.data === 'string') {
+              yield parsed.data;
+            }
+          }
+        } catch (e) {
+          // Skip metadata events with nested objects - they're not needed for display
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}

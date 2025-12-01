@@ -236,18 +236,93 @@ If critical issues arise:
 
 ---
 
+---
+
+### Phase 5: Chat Window
+
+**Goal:** Add a dedicated Chat section for testing conversations with created personas
+
+**Prerequisites:** Phases 1-4 complete (app is functional with persona CRUD)
+
+**Clarifications Applied** (Session 2025-12-01):
+- Full-page Chat section in navigation (Create / Personas / Chat)
+- Session-only chat history (in-memory, cleared on page leave/refresh)
+- Switching personas clears current chat
+- Auto-retry up to 3 times, then show manual retry button
+- "Chat" quick action on persona cards navigates to Chat with persona pre-selected
+
+**Tasks:**
+
+1. [ ] Add Chat tab to navigation
+   - Update `Tab` type to `'create' | 'personas' | 'chat'`
+   - Add third navigation button in App.tsx
+   - Add state for `chatPersona: Persona | null`
+
+2. [ ] Create ChatWindow component
+   - `src/components/ChatWindow.tsx`
+   - Persona selector dropdown (shows active personas)
+   - Message list display with user/assistant styling
+   - Input field with send button
+   - Loading indicator during response
+
+3. [ ] Create ChatMessage component
+   - `src/components/ChatMessage.tsx`
+   - User message styling (right-aligned, colored)
+   - Assistant message styling (left-aligned)
+   - Streaming indicator (typing dots)
+   - Error state with retry button
+
+4. [ ] Implement useChat hook
+   - `src/hooks/useChat.ts`
+   - Manage messages state (in-memory)
+   - Handle Flowise prediction API calls
+   - Implement streaming response parsing
+   - Auto-retry logic with exponential backoff
+   - Clear messages on persona switch
+
+5. [ ] Implement Flowise streaming client
+   - `src/lib/flowise-chat.ts`
+   - POST to `/api/v1/prediction/{chatflowId}`
+   - Parse SSE/streaming response
+   - Handle connection errors
+   - Support retry mechanism
+
+6. [ ] Add "Chat" button to PersonaCard
+   - Add chat icon button to PersonaCard actions
+   - onClick navigates to Chat tab with persona pre-selected
+   - Only show for 'active' status personas
+
+7. [ ] Handle empty states
+   - No personas created: Prompt to create one first
+   - No persona selected: Prompt to select a persona
+   - Empty chat: Welcome message with persona name
+
+8. [ ] Add responsive design
+   - Mobile-friendly chat layout
+   - Collapsible persona selector on mobile
+   - Touch-friendly message input
+
+**Deliverables:**
+- Users can test personas via built-in chat interface
+- Chat navigation accessible from main nav and persona cards
+- Streaming responses display in real-time
+- Automatic retry on failures with manual fallback
+- Session-only chat history (no persistence)
+
+---
+
 ## Phase 2 Planning Complete
 
 **Branch:** `1-ai-persona-builder`
 
 **Artifacts Generated:**
-- `specs/001-ai-persona-builder/research.md` - Technology decisions
-- `specs/001-ai-persona-builder/data-model.md` - Database schema
+- `specs/001-ai-persona-builder/research.md` - Technology decisions (updated with Chat Window)
+- `specs/001-ai-persona-builder/data-model.md` - Database schema (no changes for Chat)
 - `specs/001-ai-persona-builder/contracts/openapi.yaml` - API specification
 - `specs/001-ai-persona-builder/contracts/flowise-chatflow.ts` - Flowise types
 - `specs/001-ai-persona-builder/quickstart.md` - Development setup
 - `specs/001-ai-persona-builder/plan.md` - This implementation plan
 
 **Next Steps:**
-1. Run `/speckit.tasks` to generate actionable task list
-2. Begin Phase 1 implementation
+1. Run `/speckit.tasks` to generate actionable task list for Phase 5
+2. Begin Phase 5 implementation

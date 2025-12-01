@@ -251,3 +251,75 @@ UPDATE personas
 SET status = 'deleted', updated_at = now()
 WHERE id = $1 AND user_id = $2;
 ```
+
+---
+
+## Chat Window Types (Session-Only, No Persistence)
+
+The Chat Window feature uses in-memory state only. No database changes required.
+
+### TypeScript Types
+
+```typescript
+// Chat message in conversation
+export interface ChatMessage {
+  id: string;                    // UUID for React key
+  role: 'user' | 'assistant';   // Message sender
+  content: string;              // Message text
+  timestamp: Date;              // When message was sent/received
+  isStreaming?: boolean;        // True while assistant response is streaming
+  error?: string;               // Error message if send failed
+}
+
+// Flowise prediction request
+export interface FlowisePredictionRequest {
+  question: string;             // User's message
+  streaming?: boolean;          // Enable SSE streaming (default: true)
+  overrideConfig?: {            // Optional config overrides
+    sessionId?: string;         // Custom session ID for memory
+  };
+}
+
+// Flowise prediction response (non-streaming)
+export interface FlowisePredictionResponse {
+  text: string;                 // Assistant's response
+  sourceDocuments?: unknown[];  // Source docs if RAG enabled
+  usedTools?: string[];         // Tools invoked during response
+}
+
+// Chat state (React component state)
+export interface ChatState {
+  selectedPersonaId: string | null;  // Currently selected persona
+  messages: ChatMessage[];           // Conversation history (session-only)
+  isLoading: boolean;                // True while waiting for response
+  retryCount: number;                // Current retry attempt (0-3)
+  lastFailedMessage?: string;        // Message to retry on manual retry
+}
+```
+
+### State Lifecycle
+
+```
+┌─────────────────┐
+│  Chat Tab Open  │
+│  (empty state)  │
+└────────┬────────┘
+         │ select persona
+         ▼
+┌─────────────────┐
+│ Persona Selected│  messages: []
+│ Welcome Message │
+└────────┬────────┘
+         │ send message
+         ▼
+┌─────────────────┐
+│   Conversation  │  messages: [user, assistant, ...]
+│    In Progress  │
+└────────┬────────┘
+         │ switch persona OR leave tab
+         ▼
+┌─────────────────┐
+│   State Cleared │  messages: [] (reset)
+│   Select New    │
+└─────────────────┘
+```
