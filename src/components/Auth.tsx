@@ -70,6 +70,9 @@ export function Auth() {
         const { error: signUpError } = await supabase.auth.signUp({
           email: email.trim(),
           password,
+          options: {
+            emailRedirectTo: 'https://magic-bots.netlify.app/',
+          },
         });
 
         if (signUpError) {
