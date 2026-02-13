@@ -11,11 +11,12 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { ApiEndpointDisplay } from './components/ApiEndpointDisplay';
 import { DeleteConfirmation } from './components/DeleteConfirmation';
 import { ChatWindow } from './components/ChatWindow';
+import { DownloadApp } from './components/DownloadApp';
 import { usePersonas } from './hooks/usePersonas';
 import { useDeletePersona } from './hooks/useDeletePersona';
 import type { Persona } from './types';
 
-type Tab = 'create' | 'personas' | 'chat';
+type Tab = 'create' | 'personas' | 'chat' | 'desktop';
 
 function App() {
   // Auth state
@@ -355,6 +356,24 @@ function App() {
                 <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-cosmic-cyan to-cosmic-purple glow-cyan"></div>
               )}
             </button>
+            <button
+              onClick={() => setActiveTab('desktop')}
+              className={`px-8 py-4 font-display font-semibold border-b-2 transition-all relative group ${
+                activeTab === 'desktop'
+                  ? 'border-cosmic-cyan text-cosmic-cyan'
+                  : 'border-transparent text-gray-400 hover:text-white hover:border-white/30'
+              }`}
+            >
+              <span className="relative z-10 flex items-center gap-2">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                Desktop App
+              </span>
+              {activeTab === 'desktop' && (
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-cosmic-cyan to-cosmic-purple glow-cyan"></div>
+              )}
+            </button>
           </div>
         </div>
 
@@ -520,6 +539,9 @@ function App() {
               />
             </div>
           )}
+
+          {/* Desktop App Tab */}
+          {activeTab === 'desktop' && <DownloadApp />}
         </main>
 
         {/* Footer */}

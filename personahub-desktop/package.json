@@ -1,0 +1,46 @@
+{
+  "name": "personahub-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PersonaHub Desktop — Local Agent Runner",
+  "main": "dist-electron/main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "electron:dev": "vite build && electron .",
+    "electron:build": "tsc -b && vite build && electron-builder",
+    "electron:build:mac": "tsc -b && vite build && electron-builder --mac",
+    "electron:build:win": "tsc -b && vite build && electron-builder --win",
+    "electron:build:linux": "tsc -b && vite build && electron-builder --linux",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.84.0",
+    "better-sqlite3": "^11.0.0",
+    "electron-updater": "^6.3.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-hot-toast": "^2.6.0",
+    "uuid": "^11.1.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.5.0",
+    "@vitejs/plugin-react": "^5.1.1",
+    "autoprefixer": "^10.4.22",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.17",
+    "@tailwindcss/postcss": "^4.1.17",
+    "typescript": "~5.9.3",
+    "vite": "^7.2.4",
+    "vite-plugin-electron": "^0.28.0",
+    "vite-plugin-electron-renderer": "^0.14.0"
+  }
+}

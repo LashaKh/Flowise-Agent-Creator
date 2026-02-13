@@ -1,0 +1,58 @@
+name: Build Desktop App
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+          - os: windows-latest
+            platform: win
+          - os: ubuntu-latest
+            platform: linux
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install dependencies
+        working-directory: personahub-desktop
+        run: pnpm install
+
+      - name: Build Electron app
+        working-directory: personahub-desktop
+        run: pnpm electron:build:${{ matrix.platform }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            personahub-desktop/release/*.dmg
+            personahub-desktop/release/*.exe
+            personahub-desktop/release/*.AppImage
+            personahub-desktop/release/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
