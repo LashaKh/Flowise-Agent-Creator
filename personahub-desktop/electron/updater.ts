@@ -9,7 +9,9 @@
  *
  * Uses electron-updater which pairs with the electron-builder "publish" config.
  */
-import { autoUpdater, UpdateInfo } from 'electron-updater';
+import pkg from 'electron-updater';
+const { autoUpdater } = pkg;
+type UpdateInfo = { version: string };
 import { BrowserWindow } from 'electron';
 
 let mainWindow: BrowserWindow | null = null;
