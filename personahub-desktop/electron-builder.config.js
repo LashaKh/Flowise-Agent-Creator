@@ -45,7 +45,7 @@ export default {
   },
   // Linux
   linux: {
-    target: ['AppImage', 'snap'],
+    target: ['AppImage'],
     artifactName: 'PersonaHub-Desktop-${version}.${ext}',
     category: 'Utility',
     icon: 'build/icon.png',
