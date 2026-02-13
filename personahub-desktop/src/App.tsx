@@ -1,70 +1,70 @@
 import { useState, useEffect } from 'react';
 import { Toaster } from 'react-hot-toast';
-import SetupWizard from './components/SetupWizard';
 import ChatWindow from './components/ChatWindow';
 import ActivityLog from './components/ActivityLog';
 import Settings from './components/Settings';
-import type { AuthState } from './types';
+import SetupWizard from './components/SetupWizard';
 
 type AppView = 'chat' | 'activity' | 'settings';
 
 export default function App() {
-  const [authState, setAuthState] = useState<AuthState>({ isAuthenticated: false });
-  const [isFirstLaunch, setIsFirstLaunch] = useState(true);
-  const [loading, setLoading] = useState(true);
   const [activeView, setActiveView] = useState<AppView>('chat');
+  const [ready, setReady] = useState(false);
+  const [checking, setChecking] = useState(true);
 
-  useEffect(() => {
-    // Check if user is already authenticated
-    async function checkAuth() {
-      try {
-        const state = await window.electronAPI.auth.getState();
-        setAuthState(state);
-        setIsFirstLaunch(!state.isAuthenticated);
-      } catch {
-        // Running outside Electron (dev mode without electron)
-        setIsFirstLaunch(true);
-      } finally {
-        setLoading(false);
+  // Ensure at least one persona exists so the user always has something to chat with
+  async function ensureDefaultPersona() {
+    try {
+      const rows = await window.electronAPI.db.all(
+        `SELECT id FROM persona_configs WHERE status = 'active' LIMIT 1`,
+        []
+      );
+      if (rows.length === 0) {
+        const id = crypto.randomUUID();
+        const now = new Date().toISOString();
+        await window.electronAPI.db.run(
+          `INSERT OR IGNORE INTO persona_configs (id, name, system_prompt, status, confirmation_level, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [id, 'Assistant', 'You are a helpful AI assistant.', 'active', 'balanced', now, now]
+        );
       }
+    } catch (err) {
+      console.error('Failed to ensure default persona:', err);
     }
-    checkAuth();
-
-    // Listen for auth callbacks from OAuth flow
-    window.electronAPI?.auth.onCallback((result) => {
-      setAuthState(result as AuthState);
-      if ((result as AuthState).isAuthenticated) {
-        setIsFirstLaunch(false);
-      }
-    });
-
-    // Listen for navigation events from tray menu
-    window.electronAPI?.sync.onSyncComplete(() => {
-      // Trigger re-render when sync completes
-    });
-  }, []);
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-screen bg-gray-950 text-white">
-        <div className="animate-pulse text-lg">Loading PersonaHub Desktop...</div>
-      </div>
-    );
   }
 
-  // First launch or not authenticated — show setup wizard
-  if (isFirstLaunch || !authState.isAuthenticated) {
-    return (
-      <>
-        <SetupWizard
-          onComplete={(state) => {
-            setAuthState(state);
-            setIsFirstLaunch(false);
-          }}
-        />
-        <Toaster position="bottom-right" />
-      </>
-    );
+  // On mount, check if OpenClaw is already installed
+  useEffect(() => {
+    async function check() {
+      try {
+        const installed = await window.electronAPI.openclaw.checkInstalled();
+        if (installed) {
+          try { await ensureDefaultPersona(); } catch (e) { console.error('Default persona error:', e); }
+          setReady(true);
+        }
+      } catch (err) {
+        console.error('OpenClaw check failed:', err);
+      } finally {
+        setChecking(false);
+      }
+    }
+    check();
+  }, []);
+
+  // Called after setup wizard finishes installing OpenClaw
+  async function handleSetupComplete() {
+    await ensureDefaultPersona();
+    setReady(true);
+  }
+
+  // Show nothing while checking
+  if (checking) {
+    return <div className="h-screen bg-gray-950" />;
+  }
+
+  // Show setup wizard if OpenClaw isn't installed yet
+  if (!ready) {
+    return <SetupWizard onComplete={handleSetupComplete} />;
   }
 
   return (

@@ -12,13 +12,25 @@ interface PersonaSettings {
   customInstructions?: string;
 }
 
+interface PermissionFields {
+  enabledTools?: string[];
+  allowedPaths?: Array<{ path: string; mode: 'read' | 'readwrite' }>;
+  confirmationLevel?: string;
+  dangerousToolsEnabled?: boolean;
+  activityLogging?: boolean;
+  undoEnabled?: boolean;
+  sandboxEnabled?: boolean;
+}
+
 interface CreatePersonaRequest {
   name: string;
+  permissions?: PermissionFields;
 }
 
 interface UpdatePersonaRequest {
   systemPrompt?: string;
   settings?: Partial<PersonaSettings>;
+  permissions?: Partial<PermissionFields>;
 }
 
 Deno.serve(async (req: Request) => {
@@ -168,18 +180,32 @@ async function handlePost(
   }
 
   const trimmedName = name.trim();
+  const permissions = body.permissions;
+
+  // Build insert data with optional permission fields
+  const insertData: Record<string, unknown> = {
+    user_id: userId,
+    name: trimmedName,
+    chatflow_id: 'pending',
+    system_prompt: 'pending',
+    api_endpoint: 'pending',
+    status: 'creating',
+  };
+
+  if (permissions) {
+    if (permissions.enabledTools !== undefined) insertData.enabled_tools = permissions.enabledTools;
+    if (permissions.allowedPaths !== undefined) insertData.allowed_paths = permissions.allowedPaths;
+    if (permissions.confirmationLevel !== undefined) insertData.confirmation_level = permissions.confirmationLevel;
+    if (permissions.dangerousToolsEnabled !== undefined) insertData.dangerous_tools_enabled = permissions.dangerousToolsEnabled;
+    if (permissions.activityLogging !== undefined) insertData.activity_logging = permissions.activityLogging;
+    if (permissions.undoEnabled !== undefined) insertData.undo_enabled = permissions.undoEnabled;
+    if (permissions.sandboxEnabled !== undefined) insertData.sandbox_enabled = permissions.sandboxEnabled;
+  }
 
   // Create persona record with 'creating' status
   const { data: persona, error: insertError } = await supabase
     .from('personas')
-    .insert({
-      user_id: userId,
-      name: trimmedName,
-      chatflow_id: 'pending', // Placeholder until we create the chatflow
-      system_prompt: 'pending',
-      api_endpoint: 'pending',
-      status: 'creating',
-    })
+    .insert(insertData)
     .select()
     .single();
 
@@ -292,6 +318,18 @@ async function handlePatch(
 
   if (body.settings !== undefined) {
     updates.settings = { ...currentPersona.settings, ...body.settings };
+  }
+
+  // Handle permission fields
+  if (body.permissions) {
+    const p = body.permissions;
+    if (p.enabledTools !== undefined) updates.enabled_tools = p.enabledTools;
+    if (p.allowedPaths !== undefined) updates.allowed_paths = p.allowedPaths;
+    if (p.confirmationLevel !== undefined) updates.confirmation_level = p.confirmationLevel;
+    if (p.dangerousToolsEnabled !== undefined) updates.dangerous_tools_enabled = p.dangerousToolsEnabled;
+    if (p.activityLogging !== undefined) updates.activity_logging = p.activityLogging;
+    if (p.undoEnabled !== undefined) updates.undo_enabled = p.undoEnabled;
+    if (p.sandboxEnabled !== undefined) updates.sandbox_enabled = p.sandboxEnabled;
   }
 
   // Update Flowise chatflow if system prompt changed

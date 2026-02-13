@@ -15,6 +15,7 @@ import type {
   ChatMessage,
   UserPreferences,
   PermissionMemoryEntry,
+  KnowledgeDocument,
 } from '../src/types/index';
 
 // ─── Helpers ────────────────────────────────────────
@@ -204,6 +205,30 @@ function rowToPermission(row: PermissionRow): PermissionMemoryEntry {
     pathPattern: row.path_pattern,
     permission: row.permission as PermissionMemoryEntry['permission'],
     expiresAt: row.expires_at ?? undefined,
+    createdAt: row.created_at,
+  };
+}
+
+interface KnowledgeDocRow {
+  id: string;
+  persona_id: string;
+  title: string;
+  file_name: string;
+  file_type: string;
+  file_size: number;
+  workspace_path: string;
+  created_at: string;
+}
+
+function rowToKnowledgeDoc(row: KnowledgeDocRow): KnowledgeDocument {
+  return {
+    id: row.id,
+    personaId: row.persona_id,
+    title: row.title,
+    fileName: row.file_name,
+    fileType: row.file_type as KnowledgeDocument['fileType'],
+    fileSize: row.file_size,
+    workspacePath: row.workspace_path,
     createdAt: row.created_at,
   };
 }
@@ -497,5 +522,28 @@ export class LocalDB {
       'DELETE FROM permission_memory WHERE expires_at IS NOT NULL AND expires_at <= ?'
     ).run(new Date().toISOString());
     return result.changes;
+  }
+
+  // ── KnowledgeDocument ──────────────────────────────
+
+  insertKnowledgeDoc(doc: KnowledgeDocument): void {
+    this.db.prepare(`
+      INSERT INTO knowledge_documents (id, persona_id, title, file_name, file_type, file_size, workspace_path, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(doc.id, doc.personaId, doc.title, doc.fileName, doc.fileType, doc.fileSize, doc.workspacePath, doc.createdAt);
+  }
+
+  getKnowledgeDocs(personaId: string): KnowledgeDocument[] {
+    const rows = this.db.prepare(
+      'SELECT * FROM knowledge_documents WHERE persona_id = ? ORDER BY created_at DESC'
+    ).all(personaId) as KnowledgeDocRow[];
+    return rows.map(rowToKnowledgeDoc);
+  }
+
+  deleteKnowledgeDoc(id: string): KnowledgeDocument | undefined {
+    const row = this.db.prepare('SELECT * FROM knowledge_documents WHERE id = ?').get(id) as KnowledgeDocRow | undefined;
+    if (!row) return undefined;
+    this.db.prepare('DELETE FROM knowledge_documents WHERE id = ?').run(id);
+    return rowToKnowledgeDoc(row);
   }
 }

@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { supabase } from '../lib/supabase';
-import type { Persona, ApiResponse } from '../types';
+import type { Persona, ApiResponse, PermissionConfigValue } from '../types';
 
 interface UseCreatePersonaReturn {
-  createPersona: (name: string) => Promise<Persona | null>;
+  createPersona: (name: string, permissions?: PermissionConfigValue) => Promise<Persona | null>;
   isLoading: boolean;
   error: string | null;
   data: Persona | null;
@@ -17,7 +17,7 @@ export function useCreatePersona(): UseCreatePersonaReturn {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<Persona | null>(null);
 
-  const createPersona = async (name: string): Promise<Persona | null> => {
+  const createPersona = async (name: string, permissions?: PermissionConfigValue): Promise<Persona | null> => {
     setIsLoading(true);
     setError(null);
 
@@ -26,7 +26,7 @@ export function useCreatePersona(): UseCreatePersonaReturn {
         'personas',
         {
           method: 'POST',
-          body: { name },
+          body: { name, permissions },
         }
       );
 

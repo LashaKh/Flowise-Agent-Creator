@@ -24,6 +24,13 @@ export interface PersonaRow {
   settings: PersonaSettings;
   status: PersonaStatus;
   error_message: string | null;
+  enabled_tools: string[];
+  allowed_paths: Array<{ path: string; mode: 'read' | 'readwrite' }>;
+  confirmation_level: string;
+  dangerous_tools_enabled: boolean;
+  activity_logging: boolean;
+  undo_enabled: boolean;
+  sandbox_enabled: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -38,19 +45,49 @@ export interface Persona {
   settings: PersonaSettings;
   status: PersonaStatus;
   errorMessage: string | null;
+  enabledTools: string[];
+  allowedPaths: Array<{ path: string; mode: 'read' | 'readwrite' }>;
+  confirmationLevel: string;
+  dangerousToolsEnabled: boolean;
+  activityLogging: boolean;
+  undoEnabled: boolean;
+  sandboxEnabled: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
 
+// Permission configuration for desktop personas
+export interface PermissionConfigValue {
+  enabledTools: string[];
+  allowedPaths: Array<{ path: string; mode: 'read' | 'readwrite' }>;
+  confirmationLevel: 'paranoid' | 'balanced' | 'relaxed' | 'trust';
+  dangerousToolsEnabled: boolean;
+  activityLogging: boolean;
+  undoEnabled: boolean;
+  sandboxEnabled: boolean;
+}
+
+export const DEFAULT_PERMISSIONS: PermissionConfigValue = {
+  enabledTools: ['read', 'ls', 'web_search', 'memory_search'],
+  allowedPaths: [],
+  confirmationLevel: 'balanced',
+  dangerousToolsEnabled: false,
+  activityLogging: true,
+  undoEnabled: true,
+  sandboxEnabled: false,
+};
+
 // Create persona request
 export interface CreatePersonaRequest {
   name: string;
+  permissions?: PermissionConfigValue;
 }
 
 // Update persona request
 export interface UpdatePersonaRequest {
   systemPrompt?: string;
   settings?: Partial<PersonaSettings>;
+  permissions?: Partial<PermissionConfigValue>;
 }
 
 // API Response wrapper
@@ -70,6 +107,13 @@ export function transformPersonaRow(row: PersonaRow): Persona {
     settings: row.settings,
     status: row.status,
     errorMessage: row.error_message,
+    enabledTools: row.enabled_tools ?? DEFAULT_PERMISSIONS.enabledTools,
+    allowedPaths: row.allowed_paths ?? DEFAULT_PERMISSIONS.allowedPaths,
+    confirmationLevel: row.confirmation_level ?? DEFAULT_PERMISSIONS.confirmationLevel,
+    dangerousToolsEnabled: row.dangerous_tools_enabled ?? DEFAULT_PERMISSIONS.dangerousToolsEnabled,
+    activityLogging: row.activity_logging ?? DEFAULT_PERMISSIONS.activityLogging,
+    undoEnabled: row.undo_enabled ?? DEFAULT_PERMISSIONS.undoEnabled,
+    sandboxEnabled: row.sandbox_enabled ?? DEFAULT_PERMISSIONS.sandboxEnabled,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
   };

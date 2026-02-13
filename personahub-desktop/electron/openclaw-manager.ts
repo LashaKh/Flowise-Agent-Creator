@@ -18,6 +18,7 @@ import http from 'node:http';
 
 const NODE_VERSION = '22.22.0';
 const GATEWAY_PORT = 18789;
+const GATEWAY_TOKEN = 'personahub-local';
 const RUNTIME_DIR = path.join(os.homedir(), '.personahub', 'runtime');
 const OPENCLAW_CONFIG_DIR = path.join(os.homedir(), '.openclaw');
 const OPENCLAW_CONFIG_PATH = path.join(OPENCLAW_CONFIG_DIR, 'openclaw.json');
@@ -201,8 +202,9 @@ export async function checkInstallation(): Promise<boolean> {
 
     const nodeExists = fs.existsSync(nodePath);
     const openclawExists = fs.existsSync(openclawPath);
+    const configExists = fs.existsSync(OPENCLAW_CONFIG_PATH);
 
-    const result = nodeExists && openclawExists;
+    const result = nodeExists && openclawExists && configExists;
     installedCache = result;
     return result;
   } catch {
@@ -225,22 +227,30 @@ export async function installRuntime(
   // 1. Create runtime directory
   fs.mkdirSync(RUNTIME_DIR, { recursive: true });
 
-  const downloadUrl = getNodeDownloadUrl();
-  const isZip = downloadUrl.endsWith('.zip');
-  const archiveExt = isZip ? '.zip' : '.tar.gz';
-  const archivePath = path.join(RUNTIME_DIR, `node${archiveExt}`);
+  const nodePath = getNodePath();
+  const nodeAlreadyExists = fs.existsSync(nodePath);
 
-  // 2. Download Node.js archive (0-40%)
-  onProgress(0);
+  if (nodeAlreadyExists) {
+    // Skip download + extract — Node.js is already installed
+    console.log('[openclaw] Node.js already exists, skipping download');
+    onProgress(80);
+  } else {
+    const downloadUrl = getNodeDownloadUrl();
+    const isZip = downloadUrl.endsWith('.zip');
+    const archiveExt = isZip ? '.zip' : '.tar.gz';
+    const archivePath = path.join(RUNTIME_DIR, `node${archiveExt}`);
 
-  await downloadFile(archivePath, archivePath, (downloaded, total) => {
-    if (total > 0) {
-      const pct = Math.round((downloaded / total) * 40);
-      onProgress(pct);
-    }
-  });
+    // 2. Download Node.js archive (0-40%)
+    onProgress(0);
 
-  onProgress(40);
+    await downloadFile(downloadUrl, archivePath, (downloaded, total) => {
+      if (total > 0) {
+        const pct = Math.round((downloaded / total) * 40);
+        onProgress(pct);
+      }
+    });
+
+    onProgress(40);
 
   // 3. Extract archive (40-80%)
   try {
@@ -270,23 +280,27 @@ export async function installRuntime(
     }
     throw new Error(`Failed to extract Node.js archive: ${err}`);
   }
+  } // end else (nodeAlreadyExists)
 
   // 4. Install OpenClaw globally via our Node.js (80-100%)
-  const nodePath = getNodePath();
-  const npmPath = getNpmPath();
-
-  if (!fs.existsSync(nodePath)) {
-    throw new Error(`Node binary not found after extraction at ${nodePath}`);
-  }
-
-  try {
-    execSync(`"${nodePath}" "${npmPath}" install -g openclaw@latest`, {
-      timeout: 120000,
-      stdio: 'pipe',
-    });
+  const openclawBin = getOpenClawBinPath();
+  if (fs.existsSync(openclawBin)) {
+    console.log('[openclaw] OpenClaw already installed, skipping npm install');
     onProgress(100);
-  } catch (err) {
-    throw new Error(`Failed to install OpenClaw: ${err}`);
+  } else {
+    const npmPath = getNpmPath();
+    if (!fs.existsSync(nodePath)) {
+      throw new Error(`Node binary not found after extraction at ${nodePath}`);
+    }
+    try {
+      execSync(`"${nodePath}" "${npmPath}" install -g openclaw@latest`, {
+        timeout: 120000,
+        stdio: 'pipe',
+      });
+      onProgress(100);
+    } catch (err) {
+      throw new Error(`Failed to install OpenClaw: ${err}`);
+    }
   }
 
   installedCache = true;
@@ -305,18 +319,34 @@ export function writeConfig(
   const modelId =
     provider === 'google' ? 'gemini-2.5-flash' : 'claude-sonnet-4-5';
 
+  const baseUrl =
+    provider === 'google'
+      ? 'https://generativelanguage.googleapis.com/v1beta'
+      : 'https://api.anthropic.com';
+
   const config = {
     models: {
       providers: {
         [provider]: {
           apiKey,
-          models: [{ id: modelId }],
+          baseUrl,
+          models: [{ id: modelId, name: modelId }],
         },
       },
     },
-    gateway: { port: GATEWAY_PORT, bind: 'loopback' },
+    gateway: {
+      port: GATEWAY_PORT,
+      bind: 'loopback',
+      mode: 'local',
+      auth: { token: GATEWAY_TOKEN },
+      http: {
+        endpoints: {
+          chatCompletions: { enabled: true },
+        },
+      },
+    },
     agents: {
-      defaults: { model: `${provider}/${modelId}` },
+      defaults: { model: { primary: `${provider}/${modelId}` } },
       list: [],
     },
   };
@@ -340,18 +370,28 @@ export async function startGateway(): Promise<void> {
     throw new Error(`OpenClaw binary not found at ${openclawBin}`);
   }
 
+  console.log(`[openclaw] starting gateway: ${nodePath} ${openclawBin} gateway --port ${GATEWAY_PORT}`);
+
   gatewayProcess = spawn(nodePath, [openclawBin, 'gateway', '--port', String(GATEWAY_PORT)], {
-    stdio: 'ignore',
+    stdio: ['ignore', 'pipe', 'pipe'],
     detached: false,
   });
 
+  gatewayProcess.stdout?.on('data', (data: Buffer) => {
+    console.log(`[openclaw:stdout] ${data.toString().trim()}`);
+  });
+
+  gatewayProcess.stderr?.on('data', (data: Buffer) => {
+    console.error(`[openclaw:stderr] ${data.toString().trim()}`);
+  });
+
   gatewayProcess.on('error', (err) => {
-    console.error('OpenClaw gateway error:', err.message);
+    console.error('[openclaw] gateway spawn error:', err.message);
     gatewayProcess = null;
   });
 
   gatewayProcess.on('exit', (code) => {
-    console.log(`OpenClaw gateway exited with code ${code}`);
+    console.log(`[openclaw] gateway exited with code ${code}`);
     gatewayProcess = null;
   });
 
@@ -423,4 +463,22 @@ export function getState(): { installed: boolean; running: boolean; port: number
     running: gatewayProcess !== null && !gatewayProcess.killed,
     port: GATEWAY_PORT,
   };
+}
+
+export function getGatewayToken(): string {
+  return GATEWAY_TOKEN;
+}
+
+/**
+ * Read the configured model string (e.g. "google/gemini-2.5-flash") from the config file.
+ * Falls back to google/gemini-2.5-flash if the config can't be read.
+ */
+export function getConfiguredModel(): string {
+  try {
+    const raw = fs.readFileSync(OPENCLAW_CONFIG_PATH, 'utf-8');
+    const config = JSON.parse(raw);
+    return config?.agents?.defaults?.model?.primary ?? 'google/gemini-2.5-flash';
+  } catch {
+    return 'google/gemini-2.5-flash';
+  }
 }

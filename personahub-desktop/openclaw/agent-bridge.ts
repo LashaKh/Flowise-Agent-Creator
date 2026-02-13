@@ -7,6 +7,9 @@
  * Think of this as a "control room" that starts/stops agents and monitors
  * everything they try to do.
  */
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import type { PersonaConfig, ActionRequest, ActionEvaluation } from '../src/types';
 import { createAgentConfig, registerAgentInConfig, unregisterAgentFromConfig } from './config-factory';
 import type { OpenClawConfig } from './config-factory';
@@ -14,6 +17,9 @@ import * as openClawClient from '../electron/openclaw-client';
 
 // Active agent instances keyed by persona ID
 const activeAgents = new Map<string, AgentInstance>();
+
+// Unique per app-start so old gateway sessions with stale history don't carry over
+const SESSION_EPOCH = Date.now();
 
 interface AgentInstance {
   personaId: string;
@@ -78,6 +84,26 @@ export async function stopAgent(personaId: string): Promise<void> {
 }
 
 /**
+ * Read all .md files from the persona's knowledge/ folder and append
+ * them to the system prompt so the AI can reference uploaded documents.
+ */
+function buildSystemPromptWithKnowledge(personaId: string, basePrompt: string): string {
+  const knowledgeDir = path.join(os.homedir(), '.openclaw', 'agents', personaId, 'knowledge');
+  if (!fs.existsSync(knowledgeDir)) return basePrompt;
+
+  const files = fs.readdirSync(knowledgeDir).filter(f => f.endsWith('.md'));
+  if (files.length === 0) return basePrompt;
+
+  const docs = files.map(f => {
+    const title = path.basename(f, '.md');
+    const content = fs.readFileSync(path.join(knowledgeDir, f), 'utf-8');
+    return `## ${title}\n${content}`;
+  });
+
+  return `${basePrompt}\n\n---\n# Knowledge Base Documents\nThe following documents have been uploaded to your knowledge base. Reference them when answering related questions.\n\n${docs.join('\n\n---\n\n')}`;
+}
+
+/**
  * Send a message to a persona's agent and stream the response.
  *
  * This is the main entry point for chat. The flow:
@@ -97,13 +123,24 @@ export async function sendMessage(
     throw new Error(`No active agent for persona ${personaId}`);
   }
 
-  // Generate a session key for chat memory continuity
-  const sessionKey = `${personaId}-session`;
+  // Session key includes startup epoch so old tool-less history doesn't carry over
+  const sessionKey = `${personaId}-${SESSION_EPOCH}`;
 
   // Stream the response from OpenClaw through the callback
+  // Pass the system prompt so the AI knows who this persona is
+  // Build system prompt with knowledge docs appended
+  const systemPrompt = buildSystemPromptWithKnowledge(personaId, _persona.systemPrompt);
+
+  console.log('[agent-bridge] sendMessage:', {
+    personaId,
+    hasSystemPrompt: !!systemPrompt,
+    systemPromptLength: systemPrompt?.length ?? 0,
+    systemPromptPreview: systemPrompt?.slice(0, 80),
+  });
+  const modelOverride = _persona.settings?.modelName || undefined;
   await openClawClient.sendMessage(personaId, message, sessionKey, (content, done) => {
     onResponseCallback?.({ personaId, content, done });
-  });
+  }, systemPrompt, modelOverride, _persona.enabledTools);
 }
 
 /**

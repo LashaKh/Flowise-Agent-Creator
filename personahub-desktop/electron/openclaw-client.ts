@@ -1,4 +1,10 @@
 import WebSocket from 'ws';
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { execSync } from 'node:child_process';
+import { getConfiguredModel } from './openclaw-manager';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -12,12 +18,213 @@ export interface ApprovalRequest {
   content?: string;
 }
 
+interface ToolDef {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: {
+      type: 'object';
+      properties: Record<string, { type: string; description: string }>;
+      required: string[];
+    };
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ChatMessage = Record<string, any>;
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const BASE_URL = 'http://127.0.0.1:18789';
+const GATEWAY_PORT = 18789;
 const WS_URL = 'ws://127.0.0.1:18789';
+const GATEWAY_TOKEN = 'personahub-local';
+const MAX_TOOL_ROUNDS = 5;
+
+// ---------------------------------------------------------------------------
+// Tool definitions (OpenAI function-calling format)
+// ---------------------------------------------------------------------------
+
+const ALL_TOOLS: Record<string, ToolDef> = {
+  read: {
+    type: 'function',
+    function: {
+      name: 'read_file',
+      description: 'Read the contents of a file at the given absolute path',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path to the file (use ~ for home directory)' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  ls: {
+    type: 'function',
+    function: {
+      name: 'list_directory',
+      description: 'List all files and subdirectories in a directory',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path to the directory (use ~ for home directory)' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  write: {
+    type: 'function',
+    function: {
+      name: 'write_file',
+      description: 'Create or overwrite a file with the given content',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path for the file' },
+          content: { type: 'string', description: 'Content to write to the file' },
+        },
+        required: ['path', 'content'],
+      },
+    },
+  },
+  edit: {
+    type: 'function',
+    function: {
+      name: 'edit_file',
+      description: 'Replace a specific string in an existing file',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path to the file' },
+          old_string: { type: 'string', description: 'The exact text to find' },
+          new_string: { type: 'string', description: 'The replacement text' },
+        },
+        required: ['path', 'old_string', 'new_string'],
+      },
+    },
+  },
+  exec: {
+    type: 'function',
+    function: {
+      name: 'run_command',
+      description: 'Execute a shell command and return the output',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: 'Shell command to execute' },
+        },
+        required: ['command'],
+      },
+    },
+  },
+  web_search: {
+    type: 'function',
+    function: {
+      name: 'web_search',
+      description: 'Search the web for information (not available in local mode)',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search query' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  web_fetch: {
+    type: 'function',
+    function: {
+      name: 'web_fetch',
+      description: 'Fetch and return the text content of a URL (not available in local mode)',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'URL to fetch' },
+        },
+        required: ['url'],
+      },
+    },
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Tool execution — runs locally in the Electron main process
+// ---------------------------------------------------------------------------
+
+function expandHome(p: string): string {
+  return p.replace(/^~/, os.homedir());
+}
+
+function executeToolCall(name: string, rawArgs: string): string {
+  try {
+    const args = JSON.parse(rawArgs);
+
+    switch (name) {
+      case 'read_file': {
+        const filePath = expandHome(args.path);
+        if (!fs.existsSync(filePath)) return `Error: File not found: ${filePath}`;
+        const stat = fs.statSync(filePath);
+        if (stat.isDirectory()) return `Error: Path is a directory, not a file: ${filePath}`;
+        const content = fs.readFileSync(filePath, 'utf-8');
+        // Truncate very large files to avoid blowing up context
+        if (content.length > 50000) return content.slice(0, 50000) + '\n\n[Truncated — file is very large]';
+        return content;
+      }
+      case 'list_directory': {
+        const dirPath = expandHome(args.path);
+        if (!fs.existsSync(dirPath)) return `Error: Directory not found: ${dirPath}`;
+        const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+        return entries
+          .map((e) => `${e.isDirectory() ? '[DIR]  ' : '[FILE] '}${e.name}`)
+          .join('\n');
+      }
+      case 'write_file': {
+        const filePath = expandHome(args.path);
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        fs.writeFileSync(filePath, args.content, 'utf-8');
+        return `Successfully wrote ${args.content.length} characters to ${filePath}`;
+      }
+      case 'edit_file': {
+        const filePath = expandHome(args.path);
+        if (!fs.existsSync(filePath)) return `Error: File not found: ${filePath}`;
+        let content = fs.readFileSync(filePath, 'utf-8');
+        if (!content.includes(args.old_string)) return `Error: Text not found in file`;
+        content = content.replace(args.old_string, args.new_string);
+        fs.writeFileSync(filePath, content, 'utf-8');
+        return `Successfully edited ${filePath}`;
+      }
+      case 'run_command': {
+        const output = execSync(args.command, {
+          encoding: 'utf-8',
+          timeout: 30000,
+          maxBuffer: 1024 * 1024,
+          cwd: os.homedir(),
+        });
+        return output || '(command completed with no output)';
+      }
+      case 'web_search':
+        return 'Error: Web search is not available in local mode';
+      case 'web_fetch':
+        return 'Error: Web fetch is not available in local mode';
+      default:
+        return `Error: Unknown tool: ${name}`;
+    }
+  } catch (err: unknown) {
+    return `Error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+function buildToolDefs(enabledTools: string[]): ToolDef[] {
+  const defs: ToolDef[] = [];
+  for (const t of enabledTools) {
+    if (ALL_TOOLS[t]) defs.push(ALL_TOOLS[t]);
+  }
+  return defs;
+}
 
 // ---------------------------------------------------------------------------
 // Module-level state
@@ -29,7 +236,165 @@ let reconnectDelay = 1000;
 const MAX_RECONNECT_DELAY = 10000;
 
 // ---------------------------------------------------------------------------
-// HTTP Streaming — sendMessage
+// Non-streaming request (used during tool loop rounds)
+// ---------------------------------------------------------------------------
+
+function chatRequest(
+  agentId: string,
+  model: string,
+  messages: ChatMessage[],
+  tools: ToolDef[],
+  sessionKey: string,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<any> {
+  const body: Record<string, unknown> = { model, messages, stream: false };
+  if (tools.length > 0) body.tools = tools;
+  const payload = JSON.stringify(body);
+
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port: GATEWAY_PORT,
+        path: '/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${GATEWAY_TOKEN}`,
+          'x-openclaw-session-key': sessionKey,
+          'x-openclaw-agent-id': agentId,
+          'Content-Length': Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        let responseBody = '';
+        res.setEncoding('utf-8');
+        res.on('data', (chunk: string) => { responseBody += chunk; });
+        res.on('end', () => {
+          if (res.statusCode && res.statusCode >= 400) {
+            reject(new Error(`Request failed (${res.statusCode}): ${responseBody}`));
+            return;
+          }
+          try {
+            resolve(JSON.parse(responseBody));
+          } catch {
+            reject(new Error('Failed to parse response'));
+          }
+        });
+      },
+    );
+    req.on('error', (err) => reject(new Error(`Gateway error: ${err.message}`)));
+    req.setTimeout(60000, () => { req.destroy(); reject(new Error('Request timed out')); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Streaming request (used for the final text response)
+// ---------------------------------------------------------------------------
+
+function streamingRequest(
+  agentId: string,
+  model: string,
+  messages: ChatMessage[],
+  tools: ToolDef[],
+  sessionKey: string,
+  onChunk: (content: string, done: boolean) => void,
+): Promise<void> {
+  const body: Record<string, unknown> = { model, messages, stream: true };
+  if (tools.length > 0) body.tools = tools;
+  const payload = JSON.stringify(body);
+
+  return new Promise<void>((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port: GATEWAY_PORT,
+        path: '/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${GATEWAY_TOKEN}`,
+          'x-openclaw-session-key': sessionKey,
+          'x-openclaw-agent-id': agentId,
+          'Content-Length': Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        if (res.statusCode && res.statusCode >= 400) {
+          let errBody = '';
+          res.on('data', (chunk: Buffer) => { errBody += chunk.toString(); });
+          res.on('end', () => {
+            reject(new Error(`OpenClaw request failed (${res.statusCode}): ${errBody}`));
+          });
+          return;
+        }
+
+        let buffer = '';
+        let accumulated = '';
+
+        res.setEncoding('utf-8');
+
+        res.on('data', (chunk: string) => {
+          buffer += chunk;
+
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() ?? '';
+
+          for (const part of parts) {
+            const trimmed = part.trim();
+            if (!trimmed) continue;
+
+            for (const line of trimmed.split('\n')) {
+              if (!line.startsWith('data: ')) continue;
+              const data = line.slice(6);
+
+              if (data === '[DONE]') {
+                onChunk(accumulated, true);
+                resolve();
+                return;
+              }
+
+              try {
+                const json = JSON.parse(data);
+                const delta = json.choices?.[0]?.delta?.content;
+                if (delta) {
+                  accumulated += delta;
+                  onChunk(delta, false);
+                }
+              } catch {
+                // Skip malformed JSON
+              }
+            }
+          }
+        });
+
+        res.on('end', () => {
+          onChunk(accumulated, true);
+          resolve();
+        });
+      },
+    );
+
+    req.on('error', (err) => {
+      reject(new Error(`Gateway connection failed: ${err.message}`));
+    });
+
+    req.setTimeout(60000, () => {
+      req.destroy();
+      reject(new Error('Gateway request timed out'));
+    });
+
+    req.write(payload);
+    req.end();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// sendMessage — main entry point
+// The OpenClaw gateway runs its own agent loop with native tools when
+// tools are passed. We just stream and get back the final text.
 // ---------------------------------------------------------------------------
 
 export async function sendMessage(
@@ -37,81 +402,34 @@ export async function sendMessage(
   message: string,
   sessionKey: string,
   onChunk: (content: string, done: boolean) => void,
+  systemPrompt?: string,
+  modelOverride?: string,
+  enabledTools?: string[],
 ): Promise<void> {
-  const response = await fetch(`${BASE_URL}/v1/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-openclaw-session-key': sessionKey,
-    },
-    body: JSON.stringify({
-      model: 'openclaw:' + agentId,
-      messages: [{ role: 'user', content: message }],
-      stream: true,
-    }),
+  const model = modelOverride || getConfiguredModel();
+  const tools = enabledTools?.length ? buildToolDefs(enabledTools) : [];
+
+  // Environment context so the AI knows where it is
+  const envInfo = `\nEnvironment: ${process.platform === 'darwin' ? 'macOS' : process.platform}, home directory: ${os.homedir()}, user: ${os.userInfo().username}`;
+
+  // Embed system prompt in the user message (gateway strips role:'system')
+  const userContent = systemPrompt
+    ? `[System Instructions — follow these at all times]\n${systemPrompt}${envInfo}\n\nIMPORTANT: When the user asks you to perform file operations (read, list, write, create), you MUST call your tools to do it. Do NOT just describe what you would do — actually execute the tool.\n[End of System Instructions]\n\nUser: ${message}`
+    : `[Environment: ${process.platform === 'darwin' ? 'macOS' : process.platform}, home: ${os.homedir()}, user: ${os.userInfo().username}]\n\n${message}`;
+
+  const messages: ChatMessage[] = [
+    { role: 'user', content: userContent },
+  ];
+
+  console.log('[openclaw-client] sendMessage:', {
+    agentId,
+    model,
+    toolCount: tools.length,
+    toolNames: tools.map((t) => t.function.name),
   });
 
-  if (!response.ok) {
-    throw new Error(
-      `OpenClaw request failed (${response.status}): ${await response.text()}`,
-    );
-  }
-
-  const body = response.body;
-  if (!body) {
-    throw new Error('OpenClaw response has no body');
-  }
-
-  const reader = (body as ReadableStream<Uint8Array>).getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let accumulated = '';
-
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-
-      // SSE events are separated by double newlines
-      const parts = buffer.split('\n\n');
-      // Keep the last (potentially incomplete) part in the buffer
-      buffer = parts.pop() ?? '';
-
-      for (const part of parts) {
-        const trimmed = part.trim();
-        if (!trimmed) continue;
-
-        // Each SSE event line starts with "data: "
-        for (const line of trimmed.split('\n')) {
-          if (!line.startsWith('data: ')) continue;
-          const payload = line.slice(6); // strip "data: "
-
-          if (payload === '[DONE]') {
-            onChunk(accumulated, true);
-            return;
-          }
-
-          try {
-            const json = JSON.parse(payload);
-            const delta = json.choices?.[0]?.delta?.content;
-            if (delta) {
-              accumulated += delta;
-              onChunk(accumulated, false);
-            }
-          } catch {
-            // Skip malformed JSON lines
-          }
-        }
-      }
-    }
-
-    // Stream ended without [DONE] — still signal completion
-    onChunk(accumulated, true);
-  } finally {
-    reader.releaseLock();
-  }
+  // Stream request — gateway handles tool execution internally
+  return streamingRequest(agentId, model, messages, tools, sessionKey, onChunk);
 }
 
 // ---------------------------------------------------------------------------
@@ -129,12 +447,16 @@ export function connectApprovalWebSocket(
   wsConnection = ws;
 
   ws.on('open', () => {
-    reconnectDelay = 1000; // reset backoff on successful connect
+    reconnectDelay = 1000;
     ws.send(
       JSON.stringify({
         type: 'req',
         method: 'connect',
-        params: { role: 'operator', scopes: ['operator.approvals'] },
+        params: {
+          role: 'operator',
+          scopes: ['operator.approvals'],
+          auth: { token: GATEWAY_TOKEN },
+        },
       }),
     );
   });
@@ -163,7 +485,6 @@ export function connectApprovalWebSocket(
   });
 
   ws.on('error', () => {
-    // close will fire after error — reconnect handled there
     try {
       ws.close();
     } catch {
@@ -175,7 +496,7 @@ export function connectApprovalWebSocket(
 function scheduleReconnect(
   onRequest: (request: ApprovalRequest) => void,
 ): void {
-  if (reconnectTimer) return; // already scheduled
+  if (reconnectTimer) return;
 
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
@@ -201,6 +522,85 @@ export function resolveApproval(requestId: string, approved: boolean): void {
       params: { requestId, decision: approved ? 'approve' : 'deny' },
     }),
   );
+}
+
+// ---------------------------------------------------------------------------
+// generatePrompt — asks the AI to create a rich persona system prompt
+// ---------------------------------------------------------------------------
+
+export async function generatePrompt(
+  name: string,
+  description: string,
+): Promise<string> {
+  const metaPrompt = `You are a persona design specialist. Create a rich system prompt (300-500 words) for an AI persona with these details:
+
+Name: ${name}
+Description: ${description}
+
+The system prompt should include:
+1. **Identity & Style** — Who they are, their tone, personality traits
+2. **Communication Style** — How they speak, vocabulary level, use of analogies
+3. **Knowledge & Expertise** — What they know deeply, their specializations
+4. **Interaction Guidelines** — How they handle questions, disagreements, off-topic requests
+5. **Constraints** — What they should NOT do, boundaries
+
+Write the prompt in second person ("You are..."). Make it vivid and specific — not generic. The persona should feel like a real character with opinions and quirks.`;
+
+  const payload = JSON.stringify({
+    model: getConfiguredModel(),
+    messages: [{ role: 'user', content: metaPrompt }],
+    stream: false,
+  });
+
+  return new Promise<string>((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port: GATEWAY_PORT,
+        path: '/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${GATEWAY_TOKEN}`,
+          'Content-Length': Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        let body = '';
+        res.setEncoding('utf-8');
+        res.on('data', (chunk: string) => { body += chunk; });
+        res.on('end', () => {
+          if (res.statusCode && res.statusCode >= 400) {
+            reject(new Error(`Prompt generation failed (${res.statusCode}): ${body}`));
+            return;
+          }
+          try {
+            const json = JSON.parse(body);
+            const content = json.choices?.[0]?.message?.content;
+            if (!content) {
+              reject(new Error('Empty response from prompt generation'));
+              return;
+            }
+            resolve(content);
+          } catch {
+            reject(new Error('Failed to parse prompt generation response'));
+          }
+        });
+      },
+    );
+
+    req.on('error', (err) => {
+      reject(new Error(`Gateway connection failed: ${err.message}`));
+    });
+
+    req.setTimeout(60000, () => {
+      req.destroy();
+      reject(new Error('Prompt generation timed out'));
+    });
+
+    req.write(payload);
+    req.end();
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -32,6 +32,8 @@ export interface PersonaSettings {
   temperature?: number;
   modelName?: string;
   customInstructions?: string;
+  avatar?: string;
+  pinned?: boolean;
 }
 
 export interface PathPermission {
@@ -43,6 +45,17 @@ export interface KnowledgeBaseRef {
   docId: string;
   title: string;
   updatedAt: string;
+}
+
+export interface KnowledgeDocument {
+  id: string;
+  personaId: string;
+  title: string;
+  fileName: string;
+  fileType: 'pdf' | 'docx' | 'txt' | 'md';
+  fileSize: number;
+  workspacePath: string;
+  createdAt: string;
 }
 
 export type ConfirmationLevel = 'paranoid' | 'balanced' | 'relaxed' | 'trust';
@@ -196,9 +209,23 @@ export interface ElectronAPI {
   };
   agent: {
     sendMessage: (personaId: string, message: string) => Promise<void>;
+    createPersona: (name: string, description: string, options?: { temperature?: number; confirmationLevel?: string }) => Promise<{ id: string; name: string; systemPrompt: string }>;
+    listPersonas: () => Promise<PersonaConfig[]>;
+    getPersona: (id: string) => Promise<PersonaConfig | null>;
+    updatePersona: (id: string, updates: Partial<Pick<PersonaConfig, 'name' | 'systemPrompt' | 'confirmationLevel' | 'enabledTools' | 'allowedPaths'> & { settings: Partial<PersonaSettings> }>) => Promise<PersonaConfig>;
+    deletePersona: (id: string) => Promise<void>;
+    duplicatePersona: (id: string) => Promise<{ id: string; name: string }>;
+    regeneratePrompt: (id: string) => Promise<{ systemPrompt: string }>;
+    clearHistory: (personaId: string) => Promise<void>;
+    exportPersona: (id: string) => Promise<string>;
+    importPersona: (json: string) => Promise<{ id: string; name: string }>;
+    getStats: (personaId: string) => Promise<{ messageCount: number; lastActiveAt: string | null }>;
     onResponse: (callback: (chunk: { personaId: string; content: string; done: boolean }) => void) => void;
     onToolCall: (callback: (toolCall: { personaId: string; tool: string; action: string }) => void) => void;
     stopGeneration: (personaId: string) => Promise<void>;
+    uploadKnowledgeDoc: (personaId: string) => Promise<KnowledgeDocument | null>;
+    listKnowledgeDocs: (personaId: string) => Promise<KnowledgeDocument[]>;
+    deleteKnowledgeDoc: (docId: string) => Promise<void>;
   };
   sync: {
     syncNow: () => Promise<void>;

@@ -1,7 +1,9 @@
 import { useState, type FormEvent, type ChangeEvent } from 'react';
 import toast from 'react-hot-toast';
 import { useCreatePersona } from '../hooks/useCreatePersona';
-import type { Persona } from '../types';
+import { PermissionConfig } from './PermissionConfig';
+import { DEFAULT_PERMISSIONS } from '../types';
+import type { Persona, PermissionConfigValue } from '../types';
 
 interface PersonaFormProps {
   onSuccess: (persona: Persona) => void;
@@ -12,6 +14,8 @@ const MAX_NAME_LENGTH = 100;
 export function PersonaForm({ onSuccess }: PersonaFormProps) {
   const [name, setName] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [permissions, setPermissions] = useState<PermissionConfigValue>({ ...DEFAULT_PERMISSIONS });
+  const [permissionsOpen, setPermissionsOpen] = useState(false);
   const { createPersona, isLoading } = useCreatePersona();
 
   const validateName = (value: string): string | null => {
@@ -44,11 +48,13 @@ export function PersonaForm({ onSuccess }: PersonaFormProps) {
       return;
     }
 
-    const persona = await createPersona(name.trim());
+    const persona = await createPersona(name.trim(), permissions);
 
     if (persona) {
       toast.success(`Persona "${persona.name}" created successfully!`);
       setName('');
+      setPermissions({ ...DEFAULT_PERMISSIONS });
+      setPermissionsOpen(false);
       onSuccess(persona);
     } else {
       toast.error('Failed to create persona. Please try again.');
@@ -93,6 +99,35 @@ export function PersonaForm({ onSuccess }: PersonaFormProps) {
         <p className="text-xs text-gray-500 font-body">
           {name.length}/{MAX_NAME_LENGTH} characters
         </p>
+      </div>
+
+      {/* Collapsible Desktop Permissions */}
+      <div className="glass rounded-xl border border-white/5 overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setPermissionsOpen(!permissionsOpen)}
+          className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-white/[0.02] transition-colors"
+        >
+          <span className="text-sm font-display font-semibold text-gray-300 uppercase tracking-wide flex items-center gap-2">
+            <svg className="w-4 h-4 text-cosmic-purple" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+            Desktop Permissions
+          </span>
+          <svg
+            className={`w-5 h-5 text-gray-400 transition-transform ${permissionsOpen ? 'rotate-180' : ''}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+        {permissionsOpen && (
+          <div className="px-5 pb-5 border-t border-white/5 pt-4">
+            <PermissionConfig value={permissions} onChange={setPermissions} />
+          </div>
+        )}
       </div>
 
       <button

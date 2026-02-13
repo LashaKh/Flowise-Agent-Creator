@@ -163,6 +163,11 @@ export function useChat(personaId: string | null) {
 // Session cache to avoid repeated DB lookups within the same render cycle
 const sessionCache = new Map<string, { sessionId: string }>();
 
+/** Clear the session cache for a persona (called after clearing chat history). */
+export function clearSessionCache(personaId: string) {
+  sessionCache.delete(personaId);
+}
+
 async function getOrCreateSession(personaId: string): Promise<{ sessionId: string }> {
   const cached = sessionCache.get(personaId);
   if (cached) return cached;
@@ -173,22 +178,21 @@ async function getOrCreateSession(personaId: string): Promise<{ sessionId: strin
   )) as { id: string; session_id: string } | undefined;
 
   if (existing) {
-    const result = { sessionId: existing.session_id };
+    const result = { sessionId: existing.id };
     sessionCache.set(personaId, result);
     return result;
   }
 
-  // Create a new session
-  const sessionId = crypto.randomUUID();
+  // Create a new session — use same UUID for id and session_id
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
 
   await window.electronAPI.db.run(
     'INSERT INTO chat_sessions (id, persona_id, session_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
-    [id, personaId, sessionId, now, now]
+    [id, personaId, id, now, now]
   );
 
-  const result = { sessionId };
+  const result = { sessionId: id };
   sessionCache.set(personaId, result);
   return result;
 }

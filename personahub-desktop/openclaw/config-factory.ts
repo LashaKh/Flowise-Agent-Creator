@@ -34,6 +34,7 @@ export function createAgentConfig(persona: PersonaConfig): OpenClawConfig {
   // Ensure directories exist
   fs.mkdirSync(workspacePath, { recursive: true });
   fs.mkdirSync(memoryPath, { recursive: true });
+  fs.mkdirSync(path.join(workspacePath, 'knowledge'), { recursive: true });
 
   // Write SOUL.md — the persona's personality and instructions
   const soulContent = buildSoulMd(persona);
@@ -57,6 +58,17 @@ export function createAgentConfig(persona: PersonaConfig): OpenClawConfig {
   };
 }
 
+/** Human-readable descriptions for each tool the AI can use. */
+const TOOL_DESCRIPTIONS: Record<string, string> = {
+  read: 'Read the contents of a file',
+  ls: 'List files and folders in a directory',
+  write: 'Create or overwrite a file',
+  edit: 'Edit part of an existing file',
+  exec: 'Run a shell command',
+  web_search: 'Search the web for information',
+  web_fetch: 'Fetch and read the contents of a URL',
+};
+
 /**
  * Build the SOUL.md content — this is what gives the AI its personality.
  */
@@ -65,16 +77,38 @@ function buildSoulMd(persona: PersonaConfig): string {
     `# ${persona.name}`,
     '',
     persona.systemPrompt,
-    '',
-    '## Available Tools',
-    '',
-    ...persona.enabledTools.map((tool) => `- ${tool}`),
-    '',
-    '## Allowed Paths',
-    '',
-    ...persona.allowedPaths.map(
-      (p) => `- ${p.path} (${p.mode})`
-    ),
+  ];
+
+  // Tools section — only show if persona has tools enabled
+  if (persona.enabledTools.length > 0) {
+    sections.push(
+      '',
+      '## Available Tools',
+      '',
+      'You have access to the following tools. Use them when the user asks you to perform these actions.',
+      '',
+      ...persona.enabledTools.map((tool) => {
+        const desc = TOOL_DESCRIPTIONS[tool] ?? tool;
+        return `- **${tool}**: ${desc}`;
+      }),
+    );
+  }
+
+  // Paths section — only show if persona has paths configured
+  if (persona.allowedPaths.length > 0) {
+    sections.push(
+      '',
+      '## Allowed Paths',
+      '',
+      'You can access files within these directories:',
+      '',
+      ...persona.allowedPaths.map(
+        (p) => `- \`${p.path}\` (${p.mode === 'readwrite' ? 'read + write' : 'read only'})`
+      ),
+    );
+  }
+
+  sections.push(
     '',
     '## Guidelines',
     '',
@@ -82,7 +116,7 @@ function buildSoulMd(persona: PersonaConfig): string {
     '- Never access paths outside the allowed list',
     '- Be transparent about what actions you are taking',
     `- Confirmation level: ${persona.confirmationLevel}`,
-  ];
+  );
 
   if (persona.settings.customInstructions) {
     sections.push('', '## Custom Instructions', '', persona.settings.customInstructions);
@@ -184,7 +218,6 @@ export function registerAgentInConfig(personaId: string, workspacePath: string):
   config.agents.list.push({
     id: personaId,
     workspace: workspacePath,
-    model: config.agents.defaults?.model ?? 'anthropic/claude-sonnet-4-5',
   });
 
   writeOpenClawConfig(config);
@@ -206,14 +239,13 @@ export function unregisterAgentFromConfig(personaId: string): void {
 interface AgentEntry {
   id: string;
   workspace: string;
-  model: string;
 }
 
 interface OpenClawJsonConfig {
   models?: unknown;
   gateway?: unknown;
   agents?: {
-    defaults?: { model?: string };
+    defaults?: { model?: { primary?: string } };
     list?: AgentEntry[];
   };
 }

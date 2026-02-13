@@ -10,11 +10,14 @@ export default defineConfig({
     electron([
       {
         entry: 'electron/main.ts',
+        onstart(args) {
+          args.startup();
+        },
         vite: {
           build: {
             outDir: 'dist-electron',
             rollupOptions: {
-              external: ['electron', 'better-sqlite3', 'electron-updater', 'ws'],
+              external: ['electron', 'better-sqlite3', 'electron-updater', 'ws', 'pdf-parse', 'mammoth'],
             },
           },
         },
@@ -27,8 +30,15 @@ export default defineConfig({
         vite: {
           build: {
             outDir: 'dist-electron',
+            lib: {
+              entry: 'electron/preload.ts',
+              formats: ['cjs'],
+            },
             rollupOptions: {
               external: ['electron'],
+              output: {
+                entryFileNames: 'preload.js',
+              },
             },
           },
         },

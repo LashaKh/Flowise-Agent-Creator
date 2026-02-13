@@ -1,5 +1,7 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -42,7 +44,10 @@ import {
   stopGateway,
 } from './openclaw-manager';
 
-import type { ActionRequest, ConfirmationResponse } from '../src/types';
+import { generatePrompt } from './openclaw-client';
+import { removeAgentConfig } from '../openclaw/config-factory';
+import { convertDocument } from '../openclaw/document-converter';
+import type { ActionRequest, ConfirmationResponse, ConfirmationLevel, PersonaConfig, PersonaSettings, KnowledgeDocument } from '../src/types';
 
 // Single instance lock — only one copy of the app can run
 const gotLock = app.requestSingleInstanceLock();
@@ -70,8 +75,9 @@ function createWindow() {
   });
 
   // In dev, load from Vite dev server; in prod, load built files
-  if (process.env.NODE_ENV === 'development') {
-    mainWindow.loadURL('http://localhost:5173');
+  const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+  if (devServerUrl) {
+    mainWindow.loadURL(devServerUrl);
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
@@ -171,6 +177,261 @@ function setupIPC() {
     return stopAgent(personaId);
   });
 
+  // ─── Persona Creation (AI-powered) ────────────
+  ipcMain.handle('persona:create', async (
+    _e,
+    name: string,
+    description: string,
+    options?: { temperature?: number; confirmationLevel?: ConfirmationLevel }
+  ) => {
+    // 1. Ask the AI to generate a rich system prompt from the name + description
+    const systemPrompt = await generatePrompt(name, description);
+
+    // 2. Insert persona into SQLite
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const confirmationLevel = options?.confirmationLevel ?? 'balanced';
+
+    const db = getDatabase();
+    const defaultTools = JSON.stringify(['read', 'ls', 'web_search', 'web_fetch']);
+    const defaultPaths = JSON.stringify([{ path: '~/', mode: 'read' }]);
+
+    db.db.prepare(
+      `INSERT INTO persona_configs (id, name, system_prompt, status, confirmation_level, enabled_tools, allowed_paths, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, name, systemPrompt, 'active', confirmationLevel, defaultTools, defaultPaths, now, now);
+
+    // 3. Start the agent (writes SOUL.md + registers with OpenClaw)
+    const persona = db.getPersonaById(id);
+    if (persona) {
+      await startAgent(persona);
+    }
+
+    return { id, name, systemPrompt };
+  });
+
+  // ─── Persona Management ─────────────────────
+  ipcMain.handle('persona:list', () => {
+    return getDatabase().getActivePersonas();
+  });
+
+  ipcMain.handle('persona:get', (_e, id: string) => {
+    return getDatabase().getPersonaById(id) ?? null;
+  });
+
+  ipcMain.handle('persona:update', async (
+    _e,
+    id: string,
+    updates: Partial<Pick<PersonaConfig, 'name' | 'systemPrompt' | 'confirmationLevel' | 'enabledTools' | 'allowedPaths'> & { settings: Partial<PersonaSettings> }>
+  ) => {
+    const db = getDatabase();
+    const persona = db.getPersonaById(id);
+    if (!persona) throw new Error(`Persona ${id} not found`);
+
+    // Merge updates
+    if (updates.name !== undefined) persona.name = updates.name;
+    if (updates.systemPrompt !== undefined) persona.systemPrompt = updates.systemPrompt;
+    if (updates.confirmationLevel !== undefined) persona.confirmationLevel = updates.confirmationLevel;
+    if (updates.enabledTools !== undefined) persona.enabledTools = updates.enabledTools;
+    if (updates.allowedPaths !== undefined) persona.allowedPaths = updates.allowedPaths;
+    if (updates.settings) persona.settings = { ...persona.settings, ...updates.settings };
+    persona.updatedAt = new Date().toISOString();
+
+    db.upsertPersona(persona);
+
+    // Re-write SOUL.md if anything that affects agent config changed
+    if (updates.systemPrompt !== undefined || updates.name !== undefined || updates.enabledTools !== undefined || updates.allowedPaths !== undefined) {
+      await startAgent(persona);
+    }
+
+    return persona;
+  });
+
+  ipcMain.handle('persona:delete', async (_e, id: string) => {
+    const db = getDatabase();
+    const persona = db.getPersonaById(id);
+    if (!persona) throw new Error(`Persona ${id} not found`);
+
+    // Stop agent + remove config files
+    await stopAgent(id);
+    removeAgentConfig(id);
+
+    // Delete chat history
+    db.db.prepare(`DELETE FROM chat_messages WHERE session_id IN (SELECT id FROM chat_sessions WHERE persona_id = ?)`).run(id);
+    db.db.prepare(`DELETE FROM chat_sessions WHERE persona_id = ?`).run(id);
+
+    // Delete persona
+    db.deletePersona(id);
+  });
+
+  ipcMain.handle('persona:duplicate', async (_e, id: string) => {
+    const db = getDatabase();
+    const original = db.getPersonaById(id);
+    if (!original) throw new Error(`Persona ${id} not found`);
+
+    const newId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const clone: PersonaConfig = {
+      ...original,
+      id: newId,
+      name: `Copy of ${original.name}`,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    db.upsertPersona(clone);
+    await startAgent(clone);
+
+    return { id: newId, name: clone.name };
+  });
+
+  ipcMain.handle('persona:regeneratePrompt', async (_e, id: string) => {
+    const db = getDatabase();
+    const persona = db.getPersonaById(id);
+    if (!persona) throw new Error(`Persona ${id} not found`);
+
+    const systemPrompt = await generatePrompt(persona.name, persona.systemPrompt.slice(0, 200));
+    persona.systemPrompt = systemPrompt;
+    persona.updatedAt = new Date().toISOString();
+    db.upsertPersona(persona);
+    await startAgent(persona);
+
+    return { systemPrompt };
+  });
+
+  ipcMain.handle('persona:clearHistory', (_e, personaId: string) => {
+    const db = getDatabase();
+    db.db.prepare(`DELETE FROM chat_messages WHERE session_id IN (SELECT id FROM chat_sessions WHERE persona_id = ?)`).run(personaId);
+    db.db.prepare(`DELETE FROM chat_sessions WHERE persona_id = ?`).run(personaId);
+  });
+
+  ipcMain.handle('persona:export', (_e, id: string) => {
+    const db = getDatabase();
+    const persona = db.getPersonaById(id);
+    if (!persona) throw new Error(`Persona ${id} not found`);
+
+    // Export only the essential fields (no internal IDs)
+    const exportData = {
+      name: persona.name,
+      systemPrompt: persona.systemPrompt,
+      confirmationLevel: persona.confirmationLevel,
+      settings: persona.settings,
+      enabledTools: persona.enabledTools,
+      allowedPaths: persona.allowedPaths,
+      blockedPaths: persona.blockedPaths,
+    };
+    return JSON.stringify(exportData, null, 2);
+  });
+
+  ipcMain.handle('persona:import', async (_e, json: string) => {
+    const data = JSON.parse(json);
+    if (!data.name || !data.systemPrompt) throw new Error('Invalid persona data');
+
+    const db = getDatabase();
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    const persona: PersonaConfig = {
+      id,
+      userId: '',
+      name: data.name,
+      systemPrompt: data.systemPrompt,
+      chatflowId: '',
+      apiEndpoint: '',
+      status: 'active',
+      enabledTools: data.enabledTools ?? [],
+      allowedPaths: data.allowedPaths ?? [],
+      blockedPaths: data.blockedPaths ?? [],
+      confirmationLevel: data.confirmationLevel ?? 'balanced',
+      dangerousToolsEnabled: false,
+      activityLogging: true,
+      undoEnabled: true,
+      sandboxEnabled: false,
+      knowledgeBaseRefs: [],
+      settings: data.settings ?? {},
+      syncedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    db.upsertPersona(persona);
+    await startAgent(persona);
+
+    return { id, name: persona.name };
+  });
+
+  ipcMain.handle('persona:stats', (_e, personaId: string) => {
+    const db = getDatabase();
+    const row = db.db.prepare(`
+      SELECT COUNT(*) as count, MAX(cm.created_at) as last_active
+      FROM chat_messages cm
+      JOIN chat_sessions cs ON cm.session_id = cs.id
+      WHERE cs.persona_id = ?
+    `).get(personaId) as { count: number; last_active: string | null } | undefined;
+
+    return {
+      messageCount: row?.count ?? 0,
+      lastActiveAt: row?.last_active ?? null,
+    };
+  });
+
+  // ─── Knowledge Base ─────────────────────────────
+  ipcMain.handle('kb:upload', async (_e, personaId: string) => {
+    // Open native file picker (sandbox blocks file.path in renderer)
+    const result = await dialog.showOpenDialog({
+      title: 'Upload Knowledge Document',
+      filters: [{ name: 'Documents', extensions: ['pdf', 'docx', 'txt', 'md'] }],
+      properties: ['openFile'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    const filePath = result.filePaths[0]!;
+
+    const db = getDatabase();
+    const persona = db.getPersonaById(personaId);
+    if (!persona) throw new Error(`Persona ${personaId} not found`);
+
+    // Convert the file to plain text
+    const { text, title } = await convertDocument(filePath);
+
+    // Write as .md into the agent's knowledge folder
+    const knowledgeDir = path.join(os.homedir(), '.openclaw', 'agents', personaId, 'knowledge');
+    fs.mkdirSync(knowledgeDir, { recursive: true });
+    const mdFileName = `${title}.md`;
+    const mdPath = path.join(knowledgeDir, mdFileName);
+    fs.writeFileSync(mdPath, text, 'utf-8');
+
+    // Get original file info
+    const stat = fs.statSync(filePath);
+    const ext = path.extname(filePath).toLowerCase().replace('.', '') as KnowledgeDocument['fileType'];
+
+    // Insert DB record
+    const doc: KnowledgeDocument = {
+      id: crypto.randomUUID(),
+      personaId,
+      title,
+      fileName: path.basename(filePath),
+      fileType: ext,
+      fileSize: stat.size,
+      workspacePath: mdPath,
+      createdAt: new Date().toISOString(),
+    };
+    db.insertKnowledgeDoc(doc);
+
+    return doc;
+  });
+
+  ipcMain.handle('kb:list', (_e, personaId: string) => {
+    return getDatabase().getKnowledgeDocs(personaId);
+  });
+
+  ipcMain.handle('kb:delete', (_e, docId: string) => {
+    const db = getDatabase();
+    const doc = db.deleteKnowledgeDoc(docId);
+    if (doc && fs.existsSync(doc.workspacePath)) {
+      fs.unlinkSync(doc.workspacePath);
+    }
+  });
+
   // ─── Sync ─────────────────────────────────────
   ipcMain.handle('sync:now', async () => {
     const token = await getToken();
@@ -191,8 +452,10 @@ function setupIPC() {
   });
 
   // ─── OpenClaw ─────────────────────────────────
-  ipcMain.handle('openclaw:checkInstalled', () => {
-    return checkInstallation();
+  ipcMain.handle('openclaw:checkInstalled', async () => {
+    const result = await checkInstallation();
+    console.log('[IPC] openclaw:checkInstalled =>', result);
+    return result;
   });
 
   ipcMain.handle('openclaw:install', async (_e, apiKey: string, provider: string) => {
@@ -216,12 +479,37 @@ function setupIPC() {
 
 // ─── App Lifecycle ──────────────────────────────────
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Initialize database first — everything else depends on it
   initDatabase(app.getPath('userData'));
 
+  // Backfill: give existing personas default tools if they have none
+  {
+    const db = getDatabase();
+    const defaultTools = JSON.stringify(['read', 'ls', 'web_search', 'web_fetch']);
+    const defaultPaths = JSON.stringify([{ path: '~/', mode: 'read' }]);
+    db.db.prepare(
+      `UPDATE persona_configs SET enabled_tools = ?, allowed_paths = ? WHERE enabled_tools IS NULL OR enabled_tools = '[]'`
+    ).run(defaultTools, defaultPaths);
+  }
+
   registerProtocol();
   setupIPC();
+
+  // Auto-start gateway if OpenClaw is already installed and configured
+  const installed = await checkInstallation();
+  console.log('[main] checkInstallation:', installed);
+  if (installed) {
+    try {
+      await startGateway();
+      const ready = await waitForReady();
+      console.log('[main] gateway ready:', ready);
+      if (ready) initAgentBridge();
+    } catch (err) {
+      console.error('[main] Failed to auto-start gateway:', err);
+    }
+  }
+
   createWindow();
   initTray(mainWindow!);
   registerShortcuts(mainWindow!);

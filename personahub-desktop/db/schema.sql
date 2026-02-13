@@ -97,3 +97,15 @@ CREATE TABLE IF NOT EXISTS permission_memory (
   expires_at TEXT,
   created_at TEXT
 );
+
+-- 8. Knowledge base documents uploaded to personas for RAG
+CREATE TABLE IF NOT EXISTS knowledge_documents (
+  id TEXT PRIMARY KEY,
+  persona_id TEXT REFERENCES persona_configs(id),
+  title TEXT,
+  file_name TEXT,
+  file_type TEXT,
+  file_size INTEGER,
+  workspace_path TEXT,
+  created_at TEXT
+);

@@ -2,26 +2,27 @@
 
 ## Project Overview
 
-An AI persona builder application that allows users to create, manage, and **chat with** custom AI personas powered by Google Gemini and Flowise. Each persona has a unique personality, knowledge domain, and communication style generated through AI prompt engineering.
+An AI persona builder with **two platforms**:
+
+1. **Web App** — Create and manage AI personas powered by Google Gemini + Flowise. Hosted on Netlify (`magic-bots.netlify.app`).
+2. **Desktop App (PersonaHub Desktop)** — Electron app with local AI via OpenClaw gateway. Each persona gets an AI-generated personality and its own OpenClaw agent with a unique SOUL.md.
 
 ## Technology Stack
 
-### Frontend
-- **React** with TypeScript
-- **Vite** for build tooling
-- **Tailwind CSS** for styling
-- **React Hot Toast** for notifications
-- **Prism React Renderer** for code highlighting
-
-### Backend
-- **Supabase** (PostgreSQL database + Auth + Edge Functions)
-- **Flowise** (API endpoint: `https://flowise-2-0.onrender.com`)
-- **Google Gemini 2.5 Pro** for prompt generation
+### Web App
+- **React 19** + TypeScript + **Vite 7** + **Tailwind CSS 4**
+- **Supabase** (PostgreSQL + Auth + Edge Functions)
+- **Flowise** (`https://flowise-2-0.onrender.com`) + **Google Gemini 2.5 Pro**
 - **Upstash Redis** for chat memory
+- **PerplexityWideSearch** custom tool for web search
+- Deployed on **Netlify** at `magic-bots.netlify.app`
 
-### Tools & Integrations
-- **PerplexityWideSearch** custom tool for web search capabilities
-- **Supabase MCP Server** for database/function management
+### Desktop App (PersonaHub Desktop)
+- **Electron 33** + React 19 + TypeScript + Vite 7 + Tailwind CSS
+- **OpenClaw** — local AI gateway on port 18789 (supports Anthropic Claude + Google Gemini)
+- **better-sqlite3** for local database
+- **Node.js 22** runtime auto-downloaded to `~/.personahub/runtime/`
+- Location: `personahub-desktop/` directory
 
 ## Architecture
 
@@ -153,84 +154,73 @@ VITE_SUPABASE_ANON_KEY=<your-anon-key>
 
 ## Key Implementation Details
 
-### 1. Persona Creation Flow
+### 1. Web App — Persona Creation Flow
 1. User enters persona name in Create tab
 2. Frontend calls `/personas` POST endpoint
-3. Edge function creates persona record with status='creating'
-4. **Generates system prompt via embedded Gemini call** (2.5 Pro, temp 0.1, 5000 max tokens)
-5. Creates Flowise chatflow with generated prompt
-6. Updates persona record with chatflow_id, api_endpoint, status='active'
-7. Transforms response from snake_case to camelCase
-8. Returns complete persona to frontend
-9. Frontend hook converts date strings to Date objects
+3. Edge function generates system prompt via embedded Gemini call (2.5 Pro, temp 0.1)
+4. Creates Flowise chatflow with generated prompt + Upstash memory + PerplexityWideSearch tool
+5. Returns complete persona (snake_case → camelCase transformation)
 
-### 2. Chat Flow (New)
-1. User selects Chat tab
-2. User selects a persona from PersonaSelector dropdown
-3. useChat hook initializes with persona's chatflowId
-4. User types message in ChatInput
-5. Message sent to Flowise prediction endpoint with sessionId (for memory)
-6. Response streamed via SSE, displayed in real-time
-7. Auto-retry (3 attempts) with exponential backoff on network errors
-8. Session cleared when persona changes
+### 2. Desktop App — Persona Creation Flow (AI-Powered)
+1. User clicks "+" → modal opens with name + description fields + optional advanced settings
+2. `persona:create` IPC handler calls `generatePrompt(name, description)` via OpenClaw gateway
+3. AI generates a rich 300-500 word system prompt (identity, communication style, expertise, guidelines)
+4. Persona inserted into local SQLite with the generated prompt
+5. `startAgent()` writes SOUL.md + AGENTS.md + IDENTITY.md to `~/.openclaw/agents/{id}/`
+6. Agent registered in `~/.openclaw/openclaw.json` for gateway routing
+7. Modal closes, persona auto-selected, ready to chat
 
-### 3. Response Transformation Pattern
-**Edge Function → Frontend**:
-- Database returns: `system_prompt`, `chatflow_id`, `created_at`, etc. (snake_case)
-- Edge function transforms to: `systemPrompt`, `chatflowId`, `createdAt`, etc. (camelCase)
-- Frontend hooks convert: date strings → Date objects
+### 3. Desktop App — Chat Flow
+1. User selects persona in sidebar → `useChat` hook loads messages from SQLite
+2. User sends message → saved to DB → placeholder assistant message created
+3. `agent:send` IPC → `agentBridge.sendMessage()` → `openclawClient.sendMessage()`
+4. System prompt prepended as `{ role: 'system' }` message so AI knows its personality
+5. `x-openclaw-agent-id` header routes to persona's agent
+6. SSE streaming: gateway sends deltas → `useChat` accumulates into buffer → UI updates live
+7. On `[DONE]`: final message saved to SQLite, streaming flag cleared
 
-### 4. Chat Streaming Implementation
-- Uses Server-Sent Events (SSE) for real-time streaming
-- `parseStream()` handles both JSON and SSE response formats
-- ChatError class with typed error codes (NETWORK, API, STREAM)
-- Exponential backoff: 1000ms, 2000ms, 4000ms delays
-- Max 3 auto-retry attempts, then manual retry available
+### 4. Response Transformation Pattern
+- **Web**: Edge function transforms snake_case DB → camelCase JSON → Date objects in hooks
+- **Desktop**: `local-db.ts` has `rowToPersona()` converter (snake_case rows → camelCase types)
 
-### 5. Prompt Generation Template
-Uses complete Einstein example as template format:
-- Gemini receives full markdown structure to replicate
-- `replaceAll('{name}')` replaces all occurrences
-- System instruction tells Gemini it's a formatting assistant
-- Temperature 0.1 for highly consistent structured output
-- 5000 max tokens for comprehensive prompts (~2000 words)
+### 5. Chat Streaming (Desktop)
+- `openclaw-client.ts` sends HTTP request to local gateway (`127.0.0.1:18789`)
+- SSE parsing: splits on `\n\n`, extracts `data:` lines, parses JSON for `delta.content`
+- Sends **deltas** (not accumulated text) to avoid duplicate text bug
+- `[DONE]` event sends full accumulated text
+- 60-second timeout per request
 
-**Prompt Structure** (7 sections):
-1. Identity & Style
-2. Communication Style
-3. Knowledge & Expertise
-4. Interaction & Engagement
-5. Constraints & Guidelines
-6. Tools (PerplexityWideSearch)
-7. Final Notes
+### 6. Prompt Generation (both platforms)
+- **Web**: Gemini 2.5 Pro with Einstein example template, 5000 max tokens
+- **Desktop**: Local AI via OpenClaw gateway, meta-prompt asks for 5-section personality (Identity & Style, Communication Style, Knowledge & Expertise, Interaction Guidelines, Constraints)
 
 ## Recent Fixes & Improvements
 
+### Session 5 — Desktop Persona Pipeline (2026-02-13)
+1. **AI-powered persona creation**: Click "+" → modal with name + description → AI generates rich personality
+2. **Fixed duplicate text bug**: `openclaw-client.ts` was sending accumulated text on each chunk, but `useChat` also accumulates — now sends deltas only
+3. **Agent routing**: Added `x-openclaw-agent-id` header so each persona routes to its own OpenClaw agent
+4. **System prompt injection**: Persona's system prompt now sent as `{ role: 'system' }` message in every chat request — this is what makes each persona behave differently
+5. **Creation modal UI**: Replaced inline name-only text field with modal (name + description + collapsible advanced: temperature slider, confirmation level dropdown)
+6. **Dev mode fix**: `vite.config.ts` was missing `onstart({ args.startup() })` for main entry — Electron never launched. Also `main.ts` now uses `process.env.VITE_DEV_SERVER_URL` instead of `NODE_ENV` for dev detection
+7. **Singleton lock fix**: Force-killing the app leaves stale `SingletonLock` in `~/Library/Application Support/Electron/` — must delete before dev mode works
+
+### Session 4 — OpenClaw Integration (2026-02)
+1. OpenClaw gateway integration (port 18789, local AI)
+2. Setup wizard for API key (Anthropic/Google)
+3. Auto-download Node.js 22 + openclaw runtime
+4. WebSocket approval channel for tool calls
+
 ### Session 3 (2025-12-01)
-1. **Fixed Gemini API key leak issue**:
-   - Previous API key was reported as leaked and disabled by Google
-   - Updated edge function to read `GEMINI_API_KEY` from Supabase secrets
-   - Removed all hardcoded API keys from deployed functions
-2. **Consolidated to single edge function**:
-   - Merged `generate-prompt` functionality into `personas` function
-   - Eliminated inter-function JWT auth issues
-   - `generate-prompt` function is now deprecated (can be safely deleted)
-3. **Deployed personas function v21** with:
-   - Environment variable for GEMINI_API_KEY
-   - Embedded prompt generation (no separate function call)
-   - All configuration via Supabase secrets
+1. Fixed Gemini API key leak — moved to Supabase secrets
+2. Consolidated to single edge function (personas v21)
+3. `generate-prompt` function deprecated
 
 ### Session 2 (2025-11-24)
-1. Fixed prompt generation not being called
-2. Updated Gemini API key after leak
-3. Added response transformation (snake_case → camelCase)
-4. Fixed date parsing error in frontend hooks
+1. Fixed prompt generation, response transformation, date parsing
 
 ### Session 1 (2025-11-24)
-1. Fixed DELETE persona endpoint
-2. Fixed Custom Tool fields being empty
-3. Increased prompt generation max tokens
-4. Enhanced prompt template
+1. Fixed DELETE endpoint, Custom Tool fields, prompt template
 
 ## Chat Feature Types
 
@@ -274,82 +264,104 @@ interface ChatState {
 ## Development Commands
 
 ```bash
-# Install dependencies
-pnpm install
+# ─── Web App ───────────────────────────────
+pnpm install              # Install dependencies
+pnpm dev                  # Run Vite dev server (web only)
+pnpm build                # Production build
 
-# Run dev server
-pnpm dev
+# ─── Desktop App (from personahub-desktop/) ─
+pnpm dev                  # Dev mode — hot reload, auto-restart Electron
+                          # (uses vite-plugin-electron, shows as "Electron" in menu bar)
+pnpm electron:build:mac   # Production build → release/mac-arm64/PersonaHub Desktop.app
+                          # Then sign: codesign --force --deep --sign - "release/mac-arm64/PersonaHub Desktop.app"
 
-# Build for production
-pnpm build
-
-# Deploy Edge Functions (via MCP)
+# ─── Edge Functions (via MCP) ──────────────
 # Use mcp__supabase_flowise__deploy_edge_function tool
 ```
+
+### IMPORTANT: Restarting Desktop App After Code Changes
+
+Electron + Vite hot-reload often leaves a zombie process that holds the SingletonLock. This causes the white/blank screen. **After every code change session, always do a clean restart:**
+
+```bash
+# 1. Kill ALL old Electron/node processes (the stale ones cause white screen)
+pkill -f Electron; pkill -f "personahub-desktop"
+
+# 2. Remove the SingletonLock (prevents "app already running" block)
+rm -f ~/Library/Application\ Support/Electron/SingletonLock
+
+# 3. Start fresh from the personahub-desktop directory
+cd personahub-desktop && pnpm dev
+```
+
+**Claude: You MUST run steps 1-3 above every time you finish editing desktop app files, before telling the user to test.** Do not rely on Vite hot-reload for main process changes — it does not cleanly restart Electron.
+
+### Dev Mode Notes
+- `pnpm dev` in `personahub-desktop/` is the preferred way to develop — changes hot-reload for renderer only
+- Main process changes (electron/*.ts, openclaw/*.ts, db/*.ts) require a full restart (steps above)
+- Dev mode uses `~/Library/Application Support/Electron/` for data (separate from production)
+- Production build uses `~/Library/Application Support/personahub-desktop/`
+- Menu bar shows "Electron" in dev mode — this is normal
 
 ## Project Structure
 
 ```
 flowise-agent-builder/
-├── src/
-│   ├── components/
-│   │   ├── Auth.tsx
-│   │   ├── PersonaForm.tsx
-│   │   ├── PersonaList.tsx
-│   │   ├── PersonaCard.tsx
-│   │   ├── SettingsPanel.tsx
-│   │   ├── ApiEndpointDisplay.tsx
-│   │   ├── DeleteConfirmation.tsx
-│   │   ├── ChatWindow.tsx          # New - Main chat interface
-│   │   ├── ChatMessage.tsx         # New - Chat message bubble
-│   │   ├── ChatInput.tsx           # New - Chat input field
-│   │   └── PersonaSelector.tsx     # New - Persona dropdown
-│   ├── hooks/
-│   │   ├── usePersonas.ts
-│   │   ├── useCreatePersona.ts
-│   │   ├── useUpdatePersona.ts
-│   │   ├── useDeletePersona.ts
-│   │   └── useChat.ts              # New - Chat state management
-│   ├── lib/
-│   │   ├── supabase.ts
-│   │   ├── env.ts
-│   │   └── flowise-chat.ts         # New - Flowise chat client
-│   ├── types/
-│   │   └── index.ts                # Includes ChatMessage, ChatState types
-│   ├── App.tsx                     # Updated with Chat tab
-│   └── main.tsx
-├── supabase/
-│   └── functions/
-│       ├── _shared/                # Shared utilities
-│       └── personas/               # Main CRUD + prompt generation
-├── specs/
-│   └── 001-ai-persona-builder/
-│       └── contracts/
-│           └── flowise-chatflow.ts # Flowise API contracts
-├── public/
-└── [config files]
+├── src/                            # Web app source
+│   ├── components/                 # React components (Auth, PersonaForm, Chat*, etc.)
+│   ├── hooks/                      # usePersonas, useCreatePersona, useChat, etc.
+│   ├── lib/                        # supabase.ts, flowise-chat.ts
+│   ├── types/index.ts              # Shared types (also used by desktop)
+│   └── App.tsx
+├── personahub-desktop/             # Desktop app (Electron)
+│   ├── electron/
+│   │   ├── main.ts                 # App entry, IPC handlers, lifecycle
+│   │   ├── preload.ts              # Security bridge (window.electronAPI)
+│   │   ├── openclaw-manager.ts     # Download/install/start OpenClaw gateway
+│   │   ├── openclaw-client.ts      # HTTP streaming + WS approvals + generatePrompt()
+│   │   ├── auth.ts, tray.ts, shortcuts.ts, updater.ts, secure-store.ts
+│   │   └── vite.config.ts
+│   ├── openclaw/
+│   │   ├── config-factory.ts       # Generates SOUL.md + AGENTS.md + IDENTITY.md per persona
+│   │   └── agent-bridge.ts         # Routes messages through ActionGuard → OpenClaw
+│   ├── db/
+│   │   ├── schema.sql              # 7 tables (persona_configs, chat_sessions, etc.)
+│   │   ├── local-db.ts             # Typed CRUD with snake_case → camelCase converters
+│   │   └── init.ts                 # DB init + IPC registration
+│   ├── security/                   # ActionGuard, path-validator, permission-memory, etc.
+│   ├── sync/                       # platform-sync.ts (web ↔ desktop)
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── ChatSidebar.tsx     # Persona list + creation modal
+│   │   │   ├── ChatWindow.tsx      # Main chat interface
+│   │   │   └── SetupWizard.tsx     # API key setup
+│   │   ├── hooks/useChat.ts        # Chat state, streaming, DB persistence
+│   │   └── types/index.ts          # All desktop types + ElectronAPI interface
+│   └── release/                    # Build output (mac-arm64/)
+├── supabase/functions/personas/    # Edge function (CRUD + prompt generation, v21)
+└── specs/                          # Feature specs
 ```
 
 ## Troubleshooting
 
-### Common Issues
+### Web App Issues
 
-1. **"API key was reported as leaked"**
-   - Generate new Gemini API key at https://aistudio.google.com/app/apikey
-   - Set `GEMINI_API_KEY` in Supabase Dashboard → Edge Functions → Secrets
-   - Redeploy personas function
+1. **"API key was reported as leaked"** → New Gemini key at aistudio.google.com, set in Supabase secrets
+2. **"Invalid JWT" on creation** → Fixed in personas v21 (embedded prompt generation)
+3. **Chat not working** → Check Flowise server, chatflowId, CORS
 
-2. **"Invalid JWT" error on persona creation**
-   - This was caused by function-to-function calls with JWT verification
-   - Fixed by embedding prompt generation directly in personas function
-   - Ensure personas function is v21 or later
+### Desktop App Issues
 
-3. **Chat not working / streaming errors**
-   - Check Flowise server is running
-   - Verify chatflowId is correct for the persona
-   - Check browser console for CORS errors
+1. **Dev mode won't start (exits silently)** → Delete stale lock: `rm ~/Library/Application\ Support/Electron/SingletonLock`
+2. **Persona doesn't know who it is** → System prompt must be passed as `{ role: 'system' }` in messages array (fixed in Session 5)
+3. **Duplicate text in responses** → `openclaw-client.ts` must send deltas, not accumulated text (fixed in Session 5)
+4. **Old Desktop app vs new build** → The `.app` on Desktop is a copy — it goes stale after rebuilds. Use `pnpm dev` during development instead
+5. **"Electron" in menu bar** → Normal in dev mode. Production build shows "PersonaHub Desktop"
+6. **Gateway won't start** → Check `~/.openclaw/openclaw.json` has valid API key and model config
 
 ### Debugging Tools
 - Supabase Edge Function logs: `mcp__supabase_flowise__get_logs`
 - Database queries: `mcp__supabase_flowise__execute_sql`
-- Flowise dashboard: https://flowise-2-0.onrender.com
+- Desktop DB: `~/Library/Application Support/Electron/personahub.db` (dev) or `~/Library/Application Support/personahub-desktop/personahub.db` (prod)
+- OpenClaw agents: `~/.openclaw/agents/{personaId}/SOUL.md`
+- OpenClaw config: `~/.openclaw/openclaw.json`

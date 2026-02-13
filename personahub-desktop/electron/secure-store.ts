@@ -20,14 +20,17 @@ function getTokenPath(): string {
 }
 
 export async function storeToken(token: string): Promise<void> {
+  const tokenPath = getTokenPath();
+  fs.mkdirSync(path.dirname(tokenPath), { recursive: true });
+
   if (!safeStorage.isEncryptionAvailable()) {
     // Fallback: store as plain text (less secure, but works)
-    fs.writeFileSync(getTokenPath(), token, 'utf-8');
+    fs.writeFileSync(tokenPath, token, 'utf-8');
     return;
   }
 
   const encrypted = safeStorage.encryptString(token);
-  fs.writeFileSync(getTokenPath(), encrypted);
+  fs.writeFileSync(tokenPath, encrypted);
 }
 
 export async function getToken(): Promise<string | null> {

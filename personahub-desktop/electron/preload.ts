@@ -48,6 +48,19 @@ const electronAPI = {
   agent: {
     sendMessage: (personaId: string, message: string) =>
       ipcRenderer.invoke('agent:send', personaId, message),
+    createPersona: (name: string, description: string, options?: { temperature?: number; confirmationLevel?: string }) =>
+      ipcRenderer.invoke('persona:create', name, description, options),
+    listPersonas: () => ipcRenderer.invoke('persona:list'),
+    getPersona: (id: string) => ipcRenderer.invoke('persona:get', id),
+    updatePersona: (id: string, updates: Record<string, unknown>) =>
+      ipcRenderer.invoke('persona:update', id, updates),
+    deletePersona: (id: string) => ipcRenderer.invoke('persona:delete', id),
+    duplicatePersona: (id: string) => ipcRenderer.invoke('persona:duplicate', id),
+    regeneratePrompt: (id: string) => ipcRenderer.invoke('persona:regeneratePrompt', id),
+    clearHistory: (personaId: string) => ipcRenderer.invoke('persona:clearHistory', personaId),
+    exportPersona: (id: string) => ipcRenderer.invoke('persona:export', id),
+    importPersona: (json: string) => ipcRenderer.invoke('persona:import', json),
+    getStats: (personaId: string) => ipcRenderer.invoke('persona:stats', personaId),
     onResponse: (callback: (chunk: unknown) => void) => {
       ipcRenderer.on('agent:response', (_e, chunk) => callback(chunk));
     },
@@ -56,6 +69,12 @@ const electronAPI = {
     },
     stopGeneration: (personaId: string) =>
       ipcRenderer.invoke('agent:stop', personaId),
+    uploadKnowledgeDoc: (personaId: string) =>
+      ipcRenderer.invoke('kb:upload', personaId),
+    listKnowledgeDocs: (personaId: string) =>
+      ipcRenderer.invoke('kb:list', personaId),
+    deleteKnowledgeDoc: (docId: string) =>
+      ipcRenderer.invoke('kb:delete', docId),
   },
 
   // ─── Sync ────────────────────────────────────
