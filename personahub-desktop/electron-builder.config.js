@@ -20,9 +20,6 @@ export default {
     artifactName: 'PersonaHub-Desktop-${version}.${ext}',
     category: 'public.app-category.productivity',
     icon: 'build/icon.icns',
-    hardenedRuntime: true,
-    entitlements: 'build/entitlements.mac.plist',
-    entitlementsInherit: 'build/entitlements.mac.plist',
   },
   dmg: {
     artifactName: 'PersonaHub-Desktop-${version}.${ext}',

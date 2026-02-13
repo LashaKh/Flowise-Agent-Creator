@@ -150,6 +150,27 @@ export function DownloadApp() {
         })}
       </section>
 
+      {/* macOS Installation Note */}
+      {userOS === 'mac' && (
+        <section className="glass-strong rounded-2xl p-6 card-cosmic border border-amber-500/30">
+          <h3 className="text-base font-display font-bold text-amber-400 mb-3 flex items-center gap-2">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+            </svg>
+            macOS: Important First-Time Setup
+          </h3>
+          <p className="text-sm text-gray-400 font-body mb-3">
+            Since the app isn't signed with an Apple Developer certificate yet, macOS may show an "app is damaged" warning. To fix this, open <span className="text-white font-semibold">Terminal</span> and run:
+          </p>
+          <div className="bg-black/40 rounded-lg p-3 font-mono text-sm text-cosmic-cyan select-all cursor-pointer border border-white/5">
+            xattr -cr /Applications/PersonaHub\ Desktop.app
+          </div>
+          <p className="text-xs text-gray-500 font-body mt-2">
+            This removes the download quarantine flag. You only need to do this once after installing.
+          </p>
+        </section>
+      )}
+
       {/* What is this? */}
       <section className="glass-strong rounded-2xl p-8 card-cosmic">
         <h3 className="text-lg font-display font-bold text-white mb-4 flex items-center gap-2">
