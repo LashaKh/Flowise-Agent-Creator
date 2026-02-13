@@ -12,8 +12,8 @@ import crypto from 'node:crypto';
 import { getToken, storeToken, clearToken } from './secure-store';
 import type { AuthState } from '../src/types';
 
-const SUPABASE_URL = process.env.VITE_SUPABASE_URL || 'https://wlvfilxtvqjzwqjhfcdk.supabase.co';
-const SUPABASE_ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY || '';
+const SUPABASE_URL = 'https://wlvfilxtvqjzwqjhfcdk.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndsdmZpbHh0dnFqendxamhmY2RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM5ODM5MzYsImV4cCI6MjA3OTU1OTkzNn0.DSx2Bs36hocuCrrtecn1sAg-cTgDH5RHXOsHI72md3E';
 const PROTOCOL = 'personahub';
 
 // PKCE state stored between start and callback
@@ -95,6 +95,46 @@ export async function handleAuthCallback(url: string): Promise<AuthState> {
     return {
       isAuthenticated: false,
       error: error instanceof Error ? error.message : 'Unknown auth error',
+    };
+  }
+}
+
+// ─── Email/Password Sign In ─────────────────────
+
+export async function signInWithPassword(email: string, password: string): Promise<AuthState> {
+  try {
+    const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify({ email, password }),
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      return { isAuthenticated: false, error: err.error_description || err.msg || 'Sign in failed' };
+    }
+
+    const data = await response.json();
+
+    await storeToken(JSON.stringify({
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token,
+      expiresAt: Date.now() + data.expires_in * 1000,
+    }));
+
+    return {
+      isAuthenticated: true,
+      userId: data.user?.id,
+      email: data.user?.email,
+      accessToken: data.access_token,
+    };
+  } catch (error) {
+    return {
+      isAuthenticated: false,
+      error: error instanceof Error ? error.message : 'Sign in failed',
     };
   }
 }

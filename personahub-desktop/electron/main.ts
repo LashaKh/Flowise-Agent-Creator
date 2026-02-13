@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 import { initTray } from './tray';
-import { handleAuthCallback, getAuthState, refreshToken, logout } from './auth';
+import { handleAuthCallback, getAuthState, refreshToken, logout, signInWithPassword } from './auth';
 import { getToken, storeToken, clearToken } from './secure-store';
 import { registerShortcuts, unregisterShortcuts } from './shortcuts';
 import { initAutoUpdater, checkForUpdates, installUpdate } from './updater';
@@ -112,6 +112,7 @@ function handleDeepLink(url: string) {
 function setupIPC() {
   // Auth
   ipcMain.handle('auth:getState', () => getAuthState());
+  ipcMain.handle('auth:signIn', (_e, email: string, password: string) => signInWithPassword(email, password));
   ipcMain.handle('auth:refresh', () => refreshToken());
   ipcMain.handle('auth:logout', () => logout());
   ipcMain.handle('auth:getToken', () => getToken());

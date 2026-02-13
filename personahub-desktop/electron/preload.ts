@@ -10,6 +10,7 @@ const electronAPI = {
   // ─── Auth ────────────────────────────────────
   auth: {
     getState: () => ipcRenderer.invoke('auth:getState'),
+    signIn: (email: string, password: string) => ipcRenderer.invoke('auth:signIn', email, password),
     refresh: () => ipcRenderer.invoke('auth:refresh'),
     logout: () => ipcRenderer.invoke('auth:logout'),
     getToken: () => ipcRenderer.invoke('auth:getToken'),

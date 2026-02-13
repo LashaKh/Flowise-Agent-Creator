@@ -175,6 +175,7 @@ export interface PermissionMemoryEntry {
 export interface ElectronAPI {
   auth: {
     getState: () => Promise<AuthState>;
+    signIn: (email: string, password: string) => Promise<AuthState>;
     refresh: () => Promise<AuthState>;
     logout: () => Promise<void>;
     getToken: () => Promise<string | null>;
