@@ -8,6 +8,10 @@
  *    through the preload bridge (window.electronAPI.db.*)
  */
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import fs from 'node:fs';
 import Database from 'better-sqlite3';
 import { ipcMain } from 'electron';
