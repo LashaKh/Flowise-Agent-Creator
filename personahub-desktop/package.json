@@ -3,16 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "description": "PersonaHub Desktop — Local Agent Runner",
+  "author": "Magic Worlds",
   "main": "dist-electron/main.js",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "electron:dev": "vite build && electron .",
-    "electron:build": "tsc -b && vite build && electron-builder",
-    "electron:build:mac": "tsc -b && vite build && electron-builder --mac",
-    "electron:build:win": "tsc -b && vite build && electron-builder --win",
-    "electron:build:linux": "tsc -b && vite build && electron-builder --linux",
+    "electron:build": "tsc -b && vite build && electron-builder --config electron-builder.config.js",
+    "electron:build:mac": "tsc -b && vite build && electron-builder --mac --config electron-builder.config.js",
+    "electron:build:win": "tsc -b && vite build && electron-builder --win --config electron-builder.config.js",
+    "electron:build:linux": "tsc -b && vite build && electron-builder --linux --config electron-builder.config.js",
     "preview": "vite preview"
   },
   "dependencies": {
