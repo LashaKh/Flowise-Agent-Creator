@@ -218,7 +218,7 @@ export function DownloadApp() {
 
       {/* Version info */}
       <p className="text-center text-xs text-gray-600 font-body">
-        Version 0.1.0 &middot; Open source on{' '}
+        Version 0.2.0 &middot; Open source on{' '}
         <a
           href="https://github.com/LashaKh/Flowise-Agent-Creator"
           target="_blank"

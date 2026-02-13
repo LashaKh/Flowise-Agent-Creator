@@ -33,20 +33,27 @@ export default function App() {
     }
   }
 
-  // On mount, check if OpenClaw is already installed
+  // On mount, check if OpenClaw is already installed (retry up to 3 times
+  // because Vite hot-reload can start the renderer before the main process
+  // finishes registering IPC handlers)
   useEffect(() => {
     async function check() {
-      try {
-        const installed = await window.electronAPI.openclaw.checkInstalled();
-        if (installed) {
-          try { await ensureDefaultPersona(); } catch (e) { console.error('Default persona error:', e); }
-          setReady(true);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const installed = await window.electronAPI.openclaw.checkInstalled();
+          if (installed) {
+            try { await ensureDefaultPersona(); } catch (e) { console.error('Default persona error:', e); }
+            setReady(true);
+            setChecking(false);
+            return;
+          }
+        } catch (err) {
+          console.error(`OpenClaw check attempt ${attempt + 1} failed:`, err);
         }
-      } catch (err) {
-        console.error('OpenClaw check failed:', err);
-      } finally {
-        setChecking(false);
+        // Wait before retrying (main process may still be initializing)
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
       }
+      setChecking(false);
     }
     check();
   }, []);

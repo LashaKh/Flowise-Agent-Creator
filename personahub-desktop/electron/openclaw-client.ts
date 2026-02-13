@@ -1,9 +1,6 @@
 import WebSocket from 'ws';
 import http from 'node:http';
-import fs from 'node:fs';
-import path from 'node:path';
 import os from 'node:os';
-import { execSync } from 'node:child_process';
 import { getConfiguredModel } from './openclaw-manager';
 
 // ---------------------------------------------------------------------------
@@ -41,8 +38,6 @@ type ChatMessage = Record<string, any>;
 const GATEWAY_PORT = 18789;
 const WS_URL = 'ws://127.0.0.1:18789';
 const GATEWAY_TOKEN = 'personahub-local';
-const MAX_TOOL_ROUNDS = 5;
-
 // ---------------------------------------------------------------------------
 // Tool definitions (OpenAI function-calling format)
 // ---------------------------------------------------------------------------
@@ -151,72 +146,7 @@ const ALL_TOOLS: Record<string, ToolDef> = {
   },
 };
 
-// ---------------------------------------------------------------------------
-// Tool execution — runs locally in the Electron main process
-// ---------------------------------------------------------------------------
-
-function expandHome(p: string): string {
-  return p.replace(/^~/, os.homedir());
-}
-
-function executeToolCall(name: string, rawArgs: string): string {
-  try {
-    const args = JSON.parse(rawArgs);
-
-    switch (name) {
-      case 'read_file': {
-        const filePath = expandHome(args.path);
-        if (!fs.existsSync(filePath)) return `Error: File not found: ${filePath}`;
-        const stat = fs.statSync(filePath);
-        if (stat.isDirectory()) return `Error: Path is a directory, not a file: ${filePath}`;
-        const content = fs.readFileSync(filePath, 'utf-8');
-        // Truncate very large files to avoid blowing up context
-        if (content.length > 50000) return content.slice(0, 50000) + '\n\n[Truncated — file is very large]';
-        return content;
-      }
-      case 'list_directory': {
-        const dirPath = expandHome(args.path);
-        if (!fs.existsSync(dirPath)) return `Error: Directory not found: ${dirPath}`;
-        const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-        return entries
-          .map((e) => `${e.isDirectory() ? '[DIR]  ' : '[FILE] '}${e.name}`)
-          .join('\n');
-      }
-      case 'write_file': {
-        const filePath = expandHome(args.path);
-        fs.mkdirSync(path.dirname(filePath), { recursive: true });
-        fs.writeFileSync(filePath, args.content, 'utf-8');
-        return `Successfully wrote ${args.content.length} characters to ${filePath}`;
-      }
-      case 'edit_file': {
-        const filePath = expandHome(args.path);
-        if (!fs.existsSync(filePath)) return `Error: File not found: ${filePath}`;
-        let content = fs.readFileSync(filePath, 'utf-8');
-        if (!content.includes(args.old_string)) return `Error: Text not found in file`;
-        content = content.replace(args.old_string, args.new_string);
-        fs.writeFileSync(filePath, content, 'utf-8');
-        return `Successfully edited ${filePath}`;
-      }
-      case 'run_command': {
-        const output = execSync(args.command, {
-          encoding: 'utf-8',
-          timeout: 30000,
-          maxBuffer: 1024 * 1024,
-          cwd: os.homedir(),
-        });
-        return output || '(command completed with no output)';
-      }
-      case 'web_search':
-        return 'Error: Web search is not available in local mode';
-      case 'web_fetch':
-        return 'Error: Web fetch is not available in local mode';
-      default:
-        return `Error: Unknown tool: ${name}`;
-    }
-  } catch (err: unknown) {
-    return `Error: ${err instanceof Error ? err.message : String(err)}`;
-  }
-}
+// (Tool execution is handled server-side by the OpenClaw gateway)
 
 function buildToolDefs(enabledTools: string[]): ToolDef[] {
   const defs: ToolDef[] = [];
@@ -236,62 +166,7 @@ let reconnectDelay = 1000;
 const MAX_RECONNECT_DELAY = 10000;
 
 // ---------------------------------------------------------------------------
-// Non-streaming request (used during tool loop rounds)
-// ---------------------------------------------------------------------------
-
-function chatRequest(
-  agentId: string,
-  model: string,
-  messages: ChatMessage[],
-  tools: ToolDef[],
-  sessionKey: string,
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-): Promise<any> {
-  const body: Record<string, unknown> = { model, messages, stream: false };
-  if (tools.length > 0) body.tools = tools;
-  const payload = JSON.stringify(body);
-
-  return new Promise((resolve, reject) => {
-    const req = http.request(
-      {
-        hostname: '127.0.0.1',
-        port: GATEWAY_PORT,
-        path: '/v1/chat/completions',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${GATEWAY_TOKEN}`,
-          'x-openclaw-session-key': sessionKey,
-          'x-openclaw-agent-id': agentId,
-          'Content-Length': Buffer.byteLength(payload),
-        },
-      },
-      (res) => {
-        let responseBody = '';
-        res.setEncoding('utf-8');
-        res.on('data', (chunk: string) => { responseBody += chunk; });
-        res.on('end', () => {
-          if (res.statusCode && res.statusCode >= 400) {
-            reject(new Error(`Request failed (${res.statusCode}): ${responseBody}`));
-            return;
-          }
-          try {
-            resolve(JSON.parse(responseBody));
-          } catch {
-            reject(new Error('Failed to parse response'));
-          }
-        });
-      },
-    );
-    req.on('error', (err) => reject(new Error(`Gateway error: ${err.message}`)));
-    req.setTimeout(60000, () => { req.destroy(); reject(new Error('Request timed out')); });
-    req.write(payload);
-    req.end();
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Streaming request (used for the final text response)
+// Streaming request
 // ---------------------------------------------------------------------------
 
 function streamingRequest(
