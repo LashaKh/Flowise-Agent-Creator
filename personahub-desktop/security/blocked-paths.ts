@@ -17,12 +17,20 @@ export interface BlockedPathResult {
 /**
  * Expand ~ to the user's home directory and normalize the path.
  */
-function expandHome(p: string): string {
+export function expandHome(p: string): string {
   if (p.startsWith('~/') || p === '~') {
     return path.join(os.homedir(), p.slice(1));
   }
   if (p.startsWith('%USERPROFILE%')) {
     return path.join(os.homedir(), p.slice('%USERPROFILE%'.length));
+  }
+  if (p.startsWith('%APPDATA%')) {
+    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+    return path.join(appData, p.slice('%APPDATA%'.length));
+  }
+  if (p.startsWith('%LOCALAPPDATA%')) {
+    const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+    return path.join(localAppData, p.slice('%LOCALAPPDATA%'.length));
   }
   return p;
 }

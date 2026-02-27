@@ -58,7 +58,13 @@ export const BLOCKED_PATH_PATTERNS: string[] = [
   '**/token*',
   // Windows equivalents
   '%USERPROFILE%/.ssh',
+  '%USERPROFILE%/.aws',
+  '%USERPROFILE%/.gnupg',
   '%APPDATA%/gcloud',
+  '%APPDATA%/Microsoft/Credentials',
+  '%APPDATA%/Microsoft/Vault',
+  '%LOCALAPPDATA%/Microsoft/Credentials',
+  '%LOCALAPPDATA%/Microsoft/Vault',
 ];
 
 // ─── Helpers ───────────────────────────────────

@@ -128,6 +128,9 @@ function getOpenClawBinPath(): string {
   return path.join(globalBin, binName);
 }
 
+// Exported for testing
+export { getPlatformKey, getNodeDownloadUrl, getNodePath, getNpmPath, getOpenClawBinPath };
+
 // ─── Download Helper ────────────────────────────────
 
 /**
@@ -257,7 +260,7 @@ export async function installRuntime(
     if (isZip) {
       // Windows: use PowerShell to extract zip
       execSync(
-        `powershell -Command "Expand-Archive -Path '${archivePath}' -DestinationPath '${RUNTIME_DIR}' -Force"`,
+        `powershell -Command "Expand-Archive -Path \\"${archivePath}\\" -DestinationPath \\"${RUNTIME_DIR}\\" -Force"`,
         { timeout: 120000 }
       );
     } else {
@@ -400,8 +403,10 @@ export async function startGateway(): Promise<void> {
     stopGateway();
   };
   process.once('exit', cleanup);
-  process.once('SIGINT', cleanup);
-  process.once('SIGTERM', cleanup);
+  if (process.platform !== 'win32') {
+    process.once('SIGINT', cleanup);
+    process.once('SIGTERM', cleanup);
+  }
 }
 
 /**
@@ -446,7 +451,11 @@ export function stopGateway(): void {
   if (!gatewayProcess) return;
 
   try {
-    gatewayProcess.kill('SIGTERM');
+    if (process.platform === 'win32') {
+      gatewayProcess.kill();          // TerminateProcess on Windows
+    } else {
+      gatewayProcess.kill('SIGTERM'); // graceful on Unix
+    }
   } catch {
     // Process may have already exited
   }

@@ -45,6 +45,10 @@ jobs:
         working-directory: personahub-desktop
         run: pnpm install
 
+      - name: Run tests
+        working-directory: personahub-desktop
+        run: pnpm test
+
       - name: Build Electron app
         working-directory: personahub-desktop
         run: pnpm electron:build:${{ matrix.platform }}

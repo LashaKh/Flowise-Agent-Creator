@@ -285,12 +285,15 @@ export async function sendMessage(
   const tools = enabledTools?.length ? buildToolDefs(enabledTools) : [];
 
   // Environment context so the AI knows where it is
-  const envInfo = `\nEnvironment: ${process.platform === 'darwin' ? 'macOS' : process.platform}, home directory: ${os.homedir()}, user: ${os.userInfo().username}`;
+  const platformName = process.platform === 'darwin' ? 'macOS'
+    : process.platform === 'win32' ? 'Windows'
+    : 'Linux';
+  const envInfo = `\nEnvironment: ${platformName}, home directory: ${os.homedir()}, user: ${os.userInfo().username}`;
 
   // Embed system prompt in the user message (gateway strips role:'system')
   const userContent = systemPrompt
     ? `[System Instructions — follow these at all times]\n${systemPrompt}${envInfo}\n\nIMPORTANT: When the user asks you to perform file operations (read, list, write, create), you MUST call your tools to do it. Do NOT just describe what you would do — actually execute the tool.\n[End of System Instructions]\n\nUser: ${message}`
-    : `[Environment: ${process.platform === 'darwin' ? 'macOS' : process.platform}, home: ${os.homedir()}, user: ${os.userInfo().username}]\n\n${message}`;
+    : `[Environment: ${platformName}, home: ${os.homedir()}, user: ${os.userInfo().username}]\n\n${message}`;
 
   const messages: ChatMessage[] = [
     { role: 'user', content: userContent },
