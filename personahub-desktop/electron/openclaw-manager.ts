@@ -104,7 +104,12 @@ function getNpmGlobalBin(): string {
   const npmPath = getNpmPath();
 
   try {
-    const binDir = execSync(`"${nodePath}" "${npmPath}" bin -g`, {
+    // On Windows, npm.cmd is a batch script — running it through node.exe crashes.
+    // Run it directly so cmd.exe handles it natively.
+    const cmd = isWindows()
+      ? `"${npmPath}" bin -g`
+      : `"${nodePath}" "${npmPath}" bin -g`;
+    const binDir = execSync(cmd, {
       encoding: 'utf-8',
       timeout: 15000,
     }).trim();
@@ -296,7 +301,11 @@ export async function installRuntime(
       throw new Error(`Node binary not found after extraction at ${nodePath}`);
     }
     try {
-      execSync(`"${nodePath}" "${npmPath}" install -g openclaw@latest`, {
+      // On Windows, npm.cmd is a batch script — run it directly, not through node.exe.
+      const installCmd = isWindows()
+        ? `"${npmPath}" install -g openclaw@latest`
+        : `"${nodePath}" "${npmPath}" install -g openclaw@latest`;
+      execSync(installCmd, {
         timeout: 120000,
         stdio: 'pipe',
       });
@@ -375,10 +384,18 @@ export async function startGateway(): Promise<void> {
 
   console.log(`[openclaw] starting gateway: ${nodePath} ${openclawBin} gateway --port ${GATEWAY_PORT}`);
 
-  gatewayProcess = spawn(nodePath, [openclawBin, 'gateway', '--port', String(GATEWAY_PORT)], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: false,
-  });
+  // On Windows, openclaw.cmd is a batch script — spawn it directly with shell: true
+  // so cmd.exe handles it. On macOS/Linux, run it through our bundled node binary.
+  gatewayProcess = isWindows()
+    ? spawn(openclawBin, ['gateway', '--port', String(GATEWAY_PORT)], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: false,
+        shell: true,
+      })
+    : spawn(nodePath, [openclawBin, 'gateway', '--port', String(GATEWAY_PORT)], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: false,
+      });
 
   gatewayProcess.stdout?.on('data', (data: Buffer) => {
     console.log(`[openclaw:stdout] ${data.toString().trim()}`);
