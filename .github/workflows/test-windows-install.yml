@@ -1,0 +1,76 @@
+name: Test Windows OpenClaw Install
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'personahub-desktop/electron/openclaw-manager.ts'
+
+jobs:
+  test-install:
+    runs-on: windows-latest
+
+    steps:
+      - name: Remove git from PATH (simulate user without git)
+        shell: pwsh
+        run: |
+          $gitPaths = (Get-Command git -ErrorAction SilentlyContinue).Source | Split-Path
+          $cleanPath = ($env:PATH -split ';' | Where-Object { $_ -notin $gitPaths }) -join ';'
+          echo "PATH=$cleanPath" >> $env:GITHUB_ENV
+          Write-Host "Removed git from PATH to simulate a real Windows user"
+
+      - name: Verify git is not available
+        shell: pwsh
+        run: |
+          $git = Get-Command git -ErrorAction SilentlyContinue
+          if ($git) { Write-Error "git should not be on PATH"; exit 1 }
+          Write-Host "Confirmed: git is NOT available (simulates real user)"
+
+      - name: Download Node.js 22 (same as app does)
+        shell: pwsh
+        run: |
+          $nodeVersion = "22.22.0"
+          $url = "https://nodejs.org/dist/v$nodeVersion/node-v$nodeVersion-win-x64.zip"
+          $runtimeDir = "$env:USERPROFILE\.personahub\runtime"
+          $zipPath = "$runtimeDir\node.zip"
+
+          New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
+          Write-Host "Downloading Node.js $nodeVersion..."
+          Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
+          Write-Host "Extracting..."
+          Expand-Archive -Path $zipPath -DestinationPath $runtimeDir -Force
+          Remove-Item $zipPath
+          Write-Host "Done. Node at: $runtimeDir\node-v$nodeVersion-win-x64"
+
+      - name: Run npm install openclaw (same command as app)
+        shell: pwsh
+        run: |
+          $nodeVersion = "22.22.0"
+          $npmCmd = "$env:USERPROFILE\.personahub\runtime\node-v$nodeVersion-win-x64\npm.cmd"
+
+          Write-Host "Running: $npmCmd install -g --no-optional openclaw@latest"
+          & $npmCmd install -g --no-optional openclaw@latest
+          if ($LASTEXITCODE -ne 0) { Write-Error "npm install failed!"; exit 1 }
+          Write-Host "npm install succeeded!"
+
+      - name: Verify openclaw binary exists
+        shell: pwsh
+        run: |
+          $nodeVersion = "22.22.0"
+          $openclawCmd = "$env:USERPROFILE\.personahub\runtime\node-v$nodeVersion-win-x64\openclaw.cmd"
+
+          if (Test-Path $openclawCmd) {
+            Write-Host "SUCCESS: openclaw.cmd found at $openclawCmd"
+          } else {
+            Write-Host "openclaw.cmd not at expected path, searching..."
+            $npmCmd = "$env:USERPROFILE\.personahub\runtime\node-v$nodeVersion-win-x64\npm.cmd"
+            $binDir = & $npmCmd bin -g
+            Write-Host "npm global bin: $binDir"
+            $altPath = Join-Path $binDir "openclaw.cmd"
+            if (Test-Path $altPath) {
+              Write-Host "SUCCESS: openclaw.cmd found at $altPath"
+            } else {
+              Write-Error "FAILED: openclaw.cmd not found anywhere"
+              exit 1
+            }
+          }
