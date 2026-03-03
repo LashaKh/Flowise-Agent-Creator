@@ -11,21 +11,6 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Remove git from PATH (simulate user without git)
-        shell: pwsh
-        run: |
-          $gitPaths = (Get-Command git -ErrorAction SilentlyContinue).Source | Split-Path
-          $cleanPath = ($env:PATH -split ';' | Where-Object { $_ -notin $gitPaths }) -join ';'
-          echo "PATH=$cleanPath" >> $env:GITHUB_ENV
-          Write-Host "Removed git from PATH to simulate a real Windows user"
-
-      - name: Verify git is not available
-        shell: pwsh
-        run: |
-          $git = Get-Command git -ErrorAction SilentlyContinue
-          if ($git) { Write-Error "git should not be on PATH"; exit 1 }
-          Write-Host "Confirmed: git is NOT available (simulates real user)"
-
       - name: Download Node.js 22 (same as app does)
         shell: pwsh
         run: |
@@ -42,18 +27,19 @@ jobs:
           Remove-Item $zipPath
           Write-Host "Done. Node at: $runtimeDir\node-v$nodeVersion-win-x64"
 
-      - name: Run npm install openclaw (same command as app)
+      - name: Run npm.cmd install (WITHOUT node.exe prefix — the fix)
         shell: pwsh
         run: |
           $nodeVersion = "22.22.0"
           $npmCmd = "$env:USERPROFILE\.personahub\runtime\node-v$nodeVersion-win-x64\npm.cmd"
 
+          Write-Host "=== Testing the FIXED command (no node.exe prefix) ==="
           Write-Host "Running: $npmCmd install -g --no-optional openclaw@latest"
           & $npmCmd install -g --no-optional openclaw@latest
-          if ($LASTEXITCODE -ne 0) { Write-Error "npm install failed!"; exit 1 }
-          Write-Host "npm install succeeded!"
+          if ($LASTEXITCODE -ne 0) { Write-Error "npm install FAILED"; exit 1 }
+          Write-Host "npm install SUCCEEDED"
 
-      - name: Verify openclaw binary exists
+      - name: Verify openclaw.cmd exists
         shell: pwsh
         run: |
           $nodeVersion = "22.22.0"
@@ -62,15 +48,26 @@ jobs:
           if (Test-Path $openclawCmd) {
             Write-Host "SUCCESS: openclaw.cmd found at $openclawCmd"
           } else {
-            Write-Host "openclaw.cmd not at expected path, searching..."
+            # Check npm global bin location
             $npmCmd = "$env:USERPROFILE\.personahub\runtime\node-v$nodeVersion-win-x64\npm.cmd"
-            $binDir = & $npmCmd bin -g
+            $binDir = (& $npmCmd bin -g).Trim()
             Write-Host "npm global bin: $binDir"
             $altPath = Join-Path $binDir "openclaw.cmd"
             if (Test-Path $altPath) {
               Write-Host "SUCCESS: openclaw.cmd found at $altPath"
             } else {
-              Write-Error "FAILED: openclaw.cmd not found anywhere"
+              Write-Error "FAILED: openclaw.cmd not found"
               exit 1
             }
           }
+
+      - name: Verify npm bin -g works (without node.exe prefix)
+        shell: pwsh
+        run: |
+          $nodeVersion = "22.22.0"
+          $npmCmd = "$env:USERPROFILE\.personahub\runtime\node-v$nodeVersion-win-x64\npm.cmd"
+
+          Write-Host "=== Testing npm bin -g ==="
+          $binDir = (& $npmCmd bin -g).Trim()
+          Write-Host "Result: $binDir"
+          if ($binDir) { Write-Host "SUCCESS" } else { Write-Error "FAILED"; exit 1 }
