@@ -40,6 +40,7 @@ jobs:
             exit /b 1
           )
           echo CONFIRMED: git is NOT on PATH
+          exit /b 0
 
       - name: Download Node.js 22
         shell: pwsh
