@@ -27,47 +27,32 @@ jobs:
           Remove-Item $zipPath
           Write-Host "Done. Node at: $runtimeDir\node-v$nodeVersion-win-x64"
 
-      - name: Run npm.cmd install (WITHOUT node.exe prefix — the fix)
+      - name: Run npm.cmd install with --prefix (same as app)
         shell: pwsh
         run: |
           $nodeVersion = "22.22.0"
-          $npmCmd = "$env:USERPROFILE\.personahub\runtime\node-v$nodeVersion-win-x64\npm.cmd"
+          $runtimePrefix = "$env:USERPROFILE\.personahub\runtime\node-v$nodeVersion-win-x64"
+          $npmCmd = "$runtimePrefix\npm.cmd"
 
-          Write-Host "=== Testing the FIXED command (no node.exe prefix) ==="
-          Write-Host "Running: $npmCmd install -g --no-optional openclaw@latest"
-          & $npmCmd install -g --no-optional openclaw@latest
+          Write-Host "=== Testing the FIXED command ==="
+          Write-Host "Running: $npmCmd install -g --no-optional --prefix $runtimePrefix openclaw@latest"
+          & $npmCmd install -g --no-optional --prefix "$runtimePrefix" openclaw@latest
           if ($LASTEXITCODE -ne 0) { Write-Error "npm install FAILED"; exit 1 }
           Write-Host "npm install SUCCEEDED"
 
-      - name: Verify openclaw.cmd exists
+      - name: Verify openclaw.cmd exists in runtime dir
         shell: pwsh
         run: |
           $nodeVersion = "22.22.0"
-          $openclawCmd = "$env:USERPROFILE\.personahub\runtime\node-v$nodeVersion-win-x64\openclaw.cmd"
+          $runtimePrefix = "$env:USERPROFILE\.personahub\runtime\node-v$nodeVersion-win-x64"
+          $openclawCmd = "$runtimePrefix\openclaw.cmd"
 
+          Write-Host "Looking for: $openclawCmd"
           if (Test-Path $openclawCmd) {
             Write-Host "SUCCESS: openclaw.cmd found at $openclawCmd"
           } else {
-            # Check npm global bin location
-            $npmCmd = "$env:USERPROFILE\.personahub\runtime\node-v$nodeVersion-win-x64\npm.cmd"
-            $binDir = (& $npmCmd bin -g).Trim()
-            Write-Host "npm global bin: $binDir"
-            $altPath = Join-Path $binDir "openclaw.cmd"
-            if (Test-Path $altPath) {
-              Write-Host "SUCCESS: openclaw.cmd found at $altPath"
-            } else {
-              Write-Error "FAILED: openclaw.cmd not found"
-              exit 1
-            }
+            Write-Host "Listing files in runtime dir:"
+            Get-ChildItem $runtimePrefix -Filter "openclaw*" -Recurse | ForEach-Object { Write-Host $_.FullName }
+            Write-Error "FAILED: openclaw.cmd not found at expected path"
+            exit 1
           }
-
-      - name: Verify npm bin -g works (without node.exe prefix)
-        shell: pwsh
-        run: |
-          $nodeVersion = "22.22.0"
-          $npmCmd = "$env:USERPROFILE\.personahub\runtime\node-v$nodeVersion-win-x64\npm.cmd"
-
-          Write-Host "=== Testing npm bin -g ==="
-          $binDir = (& $npmCmd bin -g).Trim()
-          Write-Host "Result: $binDir"
-          if ($binDir) { Write-Host "SUCCESS" } else { Write-Error "FAILED"; exit 1 }

@@ -100,28 +100,15 @@ function getNpmPath(): string {
  * Get the npm global bin directory for our runtime's Node.
  */
 function getNpmGlobalBin(): string {
-  const nodePath = getNodePath();
-  const npmPath = getNpmPath();
+  const folder = getNodeFolderName();
 
-  try {
-    // On Windows, npm.cmd is a batch script — running it through node.exe crashes.
-    // Run it directly so cmd.exe handles it natively.
-    const cmd = isWindows()
-      ? `"${npmPath}" bin -g`
-      : `"${nodePath}" "${npmPath}" bin -g`;
-    const binDir = execSync(cmd, {
-      encoding: 'utf-8',
-      timeout: 15000,
-    }).trim();
-    return binDir;
-  } catch {
-    // Fallback: typical location relative to node binary
-    const folder = getNodeFolderName();
-    if (isWindows()) {
-      return path.join(RUNTIME_DIR, folder);
-    }
-    return path.join(RUNTIME_DIR, folder, 'bin');
+  // On Windows, npm installs globals to %APPDATA%\npm by default (not our runtime dir).
+  // We use --prefix during install to force it into our runtime dir, so the bin is right there.
+  // On macOS/Linux, it goes into the node folder's bin/.
+  if (isWindows()) {
+    return path.join(RUNTIME_DIR, folder);
   }
+  return path.join(RUNTIME_DIR, folder, 'bin');
 }
 
 /**
@@ -301,10 +288,12 @@ export async function installRuntime(
       throw new Error(`Node binary not found after extraction at ${nodePath}`);
     }
     try {
-      // On Windows, npm.cmd is a batch script — run it directly, not through node.exe.
-      // --no-optional: skip optional deps that may require git (not installed on many Windows PCs)
+      // On Windows: run npm.cmd directly (not through node.exe — it's a batch script).
+      // --no-optional: skip deps that need git (not installed on many Windows PCs).
+      // --prefix: install into our runtime dir so we can find openclaw.cmd later.
+      const runtimePrefix = path.join(RUNTIME_DIR, getNodeFolderName());
       const installCmd = isWindows()
-        ? `"${npmPath}" install -g --no-optional openclaw@latest`
+        ? `"${npmPath}" install -g --no-optional --prefix "${runtimePrefix}" openclaw@latest`
         : `"${nodePath}" "${npmPath}" install -g openclaw@latest`;
       execSync(installCmd, {
         timeout: 120000,
