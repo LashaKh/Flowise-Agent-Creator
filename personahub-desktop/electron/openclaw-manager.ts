@@ -351,8 +351,9 @@ export async function installRuntime(
         ? `"${npmPath}" install -g --prefix "${runtimePrefix}" openclaw@latest`
         : `"${nodePath}" "${npmPath}" install -g openclaw@latest`;
 
+      // 10 minutes — npm install can be slow on Windows (CI takes ~6 min)
       const execOpts: { timeout: number; stdio: 'pipe'; env?: NodeJS.ProcessEnv } = {
-        timeout: 120000,
+        timeout: 600000,
         stdio: 'pipe',
       };
 
