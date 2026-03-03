@@ -302,8 +302,9 @@ export async function installRuntime(
     }
     try {
       // On Windows, npm.cmd is a batch script — run it directly, not through node.exe.
+      // --no-optional: skip optional deps that may require git (not installed on many Windows PCs)
       const installCmd = isWindows()
-        ? `"${npmPath}" install -g openclaw@latest`
+        ? `"${npmPath}" install -g --no-optional openclaw@latest`
         : `"${nodePath}" "${npmPath}" install -g openclaw@latest`;
       execSync(installCmd, {
         timeout: 120000,
