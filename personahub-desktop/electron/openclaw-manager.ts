@@ -17,9 +17,11 @@ import http from 'node:http';
 // ─── Constants ──────────────────────────────────────
 
 const NODE_VERSION = '22.22.0';
+const MINGIT_VERSION = '2.47.1';
 const GATEWAY_PORT = 18789;
 const GATEWAY_TOKEN = 'personahub-local';
 const RUNTIME_DIR = path.join(os.homedir(), '.personahub', 'runtime');
+const MINGIT_DIR = path.join(RUNTIME_DIR, 'mingit');
 const OPENCLAW_CONFIG_DIR = path.join(os.homedir(), '.openclaw');
 const OPENCLAW_CONFIG_PATH = path.join(OPENCLAW_CONFIG_DIR, 'openclaw.json');
 
@@ -209,12 +211,60 @@ export async function checkInstallation(): Promise<boolean> {
 }
 
 /**
+ * Download MinGit for Windows if git is not already available.
+ * Many Windows PCs don't have git, but npm needs it for some dependencies.
+ * MinGit is a ~30MB portable git that we extract to ~/.personahub/runtime/mingit/.
+ */
+async function ensureGitOnWindows(onProgress: (pct: number) => void): Promise<void> {
+  // Check if git is already available (system-installed or previously downloaded)
+  const mingitCmd = path.join(MINGIT_DIR, 'cmd', 'git.exe');
+  if (fs.existsSync(mingitCmd)) {
+    console.log('[openclaw] MinGit already exists, skipping download');
+    return;
+  }
+
+  try {
+    execSync('git --version', { stdio: 'pipe', timeout: 5000 });
+    console.log('[openclaw] System git found, skipping MinGit download');
+    return;
+  } catch {
+    // No git — need to download MinGit
+  }
+
+  console.log('[openclaw] Git not found, downloading MinGit...');
+  const zipUrl = `https://github.com/git-for-windows/git/releases/download/v${MINGIT_VERSION}.windows.1/MinGit-${MINGIT_VERSION}-64-bit.zip`;
+  const zipPath = path.join(RUNTIME_DIR, 'mingit.zip');
+
+  await downloadFile(zipUrl, zipPath, (downloaded, total) => {
+    if (total > 0) {
+      const pct = 80 + Math.round((downloaded / total) * 5); // 80-85%
+      onProgress(pct);
+    }
+  });
+
+  // Extract MinGit
+  fs.mkdirSync(MINGIT_DIR, { recursive: true });
+  try {
+    execSync(
+      `powershell -Command "Expand-Archive -Path \\"${zipPath}\\" -DestinationPath \\"${MINGIT_DIR}\\" -Force"`,
+      { timeout: 60000 }
+    );
+    fs.unlinkSync(zipPath);
+    console.log('[openclaw] MinGit extracted to', MINGIT_DIR);
+  } catch (err) {
+    try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
+    throw new Error(`Failed to extract MinGit: ${err}`);
+  }
+}
+
+/**
  * Download Node.js 22 and install OpenClaw globally.
  *
  * Progress stages:
  *  0-40%  — Downloading Node.js archive
  *  40-80% — Extracting archive and setting up
- *  80-100% — Installing OpenClaw via npm
+ *  80-85% — Downloading MinGit (Windows only)
+ *  85-100% — Installing OpenClaw via npm
  */
 export async function installRuntime(
   onProgress: (pct: number) => void
@@ -277,7 +327,12 @@ export async function installRuntime(
   }
   } // end else (nodeAlreadyExists)
 
-  // 4. Install OpenClaw globally via our Node.js (80-100%)
+  // 4. On Windows, ensure git is available (npm needs it for some dependencies)
+  if (isWindows()) {
+    await ensureGitOnWindows(onProgress);
+  }
+
+  // 5. Install OpenClaw globally via our Node.js (90-100%)
   const openclawBin = getOpenClawBinPath();
   if (fs.existsSync(openclawBin)) {
     console.log('[openclaw] OpenClaw already installed, skipping npm install');
@@ -289,16 +344,25 @@ export async function installRuntime(
     }
     try {
       // On Windows: run npm.cmd directly (not through node.exe — it's a batch script).
-      // --no-optional: skip deps that need git (not installed on many Windows PCs).
       // --prefix: install into our runtime dir so we can find openclaw.cmd later.
+      // Add MinGit to PATH so npm can use git for dependencies that need it.
       const runtimePrefix = path.join(RUNTIME_DIR, getNodeFolderName());
       const installCmd = isWindows()
-        ? `"${npmPath}" install -g --no-optional --prefix "${runtimePrefix}" openclaw@latest`
+        ? `"${npmPath}" install -g --prefix "${runtimePrefix}" openclaw@latest`
         : `"${nodePath}" "${npmPath}" install -g openclaw@latest`;
-      execSync(installCmd, {
+
+      const execOpts: { timeout: number; stdio: 'pipe'; env?: NodeJS.ProcessEnv } = {
         timeout: 120000,
         stdio: 'pipe',
-      });
+      };
+
+      // On Windows, inject MinGit into PATH so npm can find git
+      if (isWindows()) {
+        const mingitBin = path.join(MINGIT_DIR, 'cmd');
+        execOpts.env = { ...process.env, PATH: `${mingitBin};${process.env.PATH}` };
+      }
+
+      execSync(installCmd, execOpts);
       onProgress(100);
     } catch (err) {
       throw new Error(`Failed to install OpenClaw: ${err}`);
