@@ -1,4 +1,4 @@
-import { useState, useEffect, type ChangeEvent } from 'react';
+import { useState, useEffect, useRef, type ChangeEvent, type KeyboardEvent } from 'react';
 import toast from 'react-hot-toast';
 import { useUpdatePersona } from '../hooks/useUpdatePersona';
 import type { Persona } from '../types';
@@ -14,24 +14,34 @@ export function SettingsPanel({ persona, onUpdate }: SettingsPanelProps) {
   const [temperature, setTemperature] = useState(persona.settings?.temperature ?? 0.7);
   const [activeTab, setActiveTab] = useState<'edit' | 'preview'>('edit');
 
-  // Store original values for reset functionality
-  const [originalSystemPrompt] = useState(persona.systemPrompt);
-  const [originalTemperature] = useState(persona.settings?.temperature ?? 0.7);
+  // Store the "last saved" values in refs so they always track the latest
+  // persona prop (which represents what was last persisted). Previously
+  // these were captured in useState at mount and never updated — the
+  // "Unsaved Changes" badge stayed stuck after saving and Reset reverted
+  // to the very first values rather than the last saved state
+  // (audit finding P3-D-7).
+  const originalSystemPromptRef = useRef(persona.systemPrompt);
+  const originalTemperatureRef = useRef(persona.settings?.temperature ?? 0.7);
 
   const { updatePersona, isLoading } = useUpdatePersona(persona.id);
 
-  // Track if there are unsaved changes
-  const hasChanges = systemPrompt !== originalSystemPrompt || temperature !== originalTemperature;
+  // Track if there are unsaved changes against the most recently saved values
+  const hasChanges =
+    systemPrompt !== originalSystemPromptRef.current ||
+    temperature !== originalTemperatureRef.current;
 
   // Calculate metrics
   const charCount = systemPrompt.length;
   const wordCount = systemPrompt.trim() ? systemPrompt.trim().split(/\s+/).length : 0;
   const lineCount = systemPrompt.split('\n').length;
 
-  // Update local state if persona prop changes
+  // Update local state AND original refs when the persona prop changes
+  // (e.g. after a save or switching personas).
   useEffect(() => {
     setSystemPrompt(persona.systemPrompt);
     setTemperature(persona.settings?.temperature ?? 0.7);
+    originalSystemPromptRef.current = persona.systemPrompt;
+    originalTemperatureRef.current = persona.settings?.temperature ?? 0.7;
   }, [persona.systemPrompt, persona.settings?.temperature]);
 
   const handleSystemPromptChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
@@ -57,9 +67,18 @@ export function SettingsPanel({ persona, onUpdate }: SettingsPanelProps) {
   };
 
   const handleReset = () => {
-    setSystemPrompt(originalSystemPrompt);
-    setTemperature(originalTemperature);
-    toast.success('Settings reset to original values');
+    setSystemPrompt(originalSystemPromptRef.current);
+    setTemperature(originalTemperatureRef.current);
+    toast.success('Settings reset to last saved values');
+  };
+
+  // Audit finding: Cmd+Enter hint was shown but never wired up. Add a
+  // keyboard handler on the textarea so the promised shortcut actually works.
+  const handleTextareaKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && hasChanges && !isLoading) {
+      e.preventDefault();
+      handleSave();
+    }
   };
 
   const getTemperatureLabel = (temp: number) => {
@@ -199,6 +218,7 @@ export function SettingsPanel({ persona, onUpdate }: SettingsPanelProps) {
                     id="system-prompt"
                     value={systemPrompt}
                     onChange={handleSystemPromptChange}
+                    onKeyDown={handleTextareaKeyDown}
                     disabled={isLoading}
                     rows={12}
                     placeholder="Enter the system prompt for this persona...&#10;&#10;Example:&#10;You are Albert Einstein, the renowned theoretical physicist. Respond with wisdom, curiosity, and a touch of humor. Draw from your vast knowledge of physics, mathematics, and philosophy..."
@@ -281,8 +301,10 @@ export function SettingsPanel({ persona, onUpdate }: SettingsPanelProps) {
                     transition-all
                   "
                   style={{
+                    // Audit finding P5-B-1: replaced forbidden #3b82f6 with
+                    // cosmic-cyan (#06b6d4) to match the rest of the palette.
                     background: `linear-gradient(to right,
-                      #3b82f6 0%,
+                      #06b6d4 0%,
                       #10b981 25%,
                       #f59e0b 50%,
                       #ef4444 75%,

@@ -3,7 +3,7 @@
 ## Verified Configuration
 
 **Flowise Instance**: https://flowise-2-0.onrender.com
-**API Key**: `ijD+kfSjYMcqEyBHNCHyEaymDzrD7br4BW4/DRe/eYI=`
+**API Key**: `<your-flowise-api-key>` (set via `FLOWISE_API_KEY` in Supabase secrets)
 
 ---
 

@@ -14,6 +14,10 @@ import type { PersonaConfig, ActionRequest, ActionEvaluation } from '../src/type
 import { createAgentConfig, registerAgentInConfig, unregisterAgentFromConfig } from './config-factory';
 import type { OpenClawConfig } from './config-factory';
 import * as openClawClient from '../electron/openclaw-client';
+import * as openRouterClient from '../electron/openrouter-client';
+import { OPENROUTER_MODEL_IDS } from '../electron/openrouter-config';
+import { DEFAULT_MODEL_ID } from '../src/constants/models';
+import { logAction } from '../security/action-guard';
 
 // Active agent instances keyed by persona ID
 const activeAgents = new Map<string, AgentInstance>();
@@ -37,6 +41,10 @@ let onToolCallCallback: ToolCallCallback | null = null;
 // ActionGuard function — injected from security module
 let actionGuardFn: ((request: ActionRequest, persona: PersonaConfig) => Promise<ActionEvaluation>) | null = null;
 
+// Persona lookup — injected so the bridge can fetch real persona config by ID
+// without creating a circular dependency on the database module.
+let personaLookupFn: ((personaId: string) => PersonaConfig | null) | null = null;
+
 /**
  * Inject the ActionGuard function (called during app initialization).
  * This avoids circular dependencies between the bridge and security modules.
@@ -45,6 +53,14 @@ export function setActionGuard(
   guard: (request: ActionRequest, persona: PersonaConfig) => Promise<ActionEvaluation>
 ) {
   actionGuardFn = guard;
+}
+
+/**
+ * Inject a persona lookup function so WebSocket approval flow can find
+ * the real persona config for security evaluation (instead of a stub).
+ */
+export function setPersonaLookup(lookup: (personaId: string) => PersonaConfig | null) {
+  personaLookupFn = lookup;
 }
 
 /**
@@ -137,10 +153,34 @@ export async function sendMessage(
     systemPromptLength: systemPrompt?.length ?? 0,
     systemPromptPreview: systemPrompt?.slice(0, 80),
   });
-  const modelOverride = _persona.settings?.modelName || undefined;
-  await openClawClient.sendMessage(personaId, message, sessionKey, (content, done) => {
+  // Pick the backend based on which catalog the chosen model belongs to.
+  // OpenRouter models (DeepSeek, Llama 4, Qwen, Kimi) → openrouter-client.
+  // Anything else (Claude, Gemini, blank) → openclaw-client (existing path).
+  const modelId = _persona.settings?.modelName || DEFAULT_MODEL_ID;
+  const onChunk = (content: string, done: boolean) => {
     onResponseCallback?.({ personaId, content, done });
-  }, systemPrompt, modelOverride, _persona.enabledTools);
+  };
+
+  if (OPENROUTER_MODEL_IDS.has(modelId)) {
+    await openRouterClient.sendMessage(
+      personaId,
+      message,
+      onChunk,
+      systemPrompt,
+      modelId,
+      _persona.enabledTools,
+    );
+  } else {
+    await openClawClient.sendMessage(
+      personaId,
+      message,
+      sessionKey,
+      onChunk,
+      systemPrompt,
+      modelId,
+      _persona.enabledTools,
+    );
+  }
 }
 
 /**
@@ -166,17 +206,28 @@ export async function handleToolCall(
   onToolCallCallback?.({ personaId, tool, action });
 
   // Run through ActionGuard
-  if (actionGuardFn) {
-    return actionGuardFn(request, persona);
+  const evaluation: ActionEvaluation = actionGuardFn
+    ? await actionGuardFn(request, persona)
+    : { result: 'deny', tier: 'blocked', reason: 'Security layer not initialized' };
+
+  // Record in the action log so the Activity Log UI has something to show.
+  // Wrapped so a DB hiccup can never break tool execution.
+  try {
+    const resultMap = { allow: 'allowed', deny: 'denied', confirm: 'confirmed' } as const;
+    logAction({
+      personaId,
+      tool,
+      action,
+      target,
+      contentPreview: content?.slice(0, 500),
+      result: resultMap[evaluation.result],
+      denyReason: evaluation.reason,
+    });
+  } catch (err) {
+    console.error('[agent-bridge] Failed to log action (non-fatal):', err);
   }
 
-  // Placeholder guard: allow safe tools only
-  const safeTier = ['read', 'ls', 'web_search', 'web_fetch', 'memory_search', 'calendar.read', 'weather'];
-  if (safeTier.includes(tool)) {
-    return { result: 'allow', tier: 'safe' };
-  }
-
-  return { result: 'deny', tier: 'blocked', reason: 'Security layer not initialized' };
+  return evaluation;
 }
 
 /**
@@ -196,36 +247,46 @@ export function onToolCall(callback: ToolCallCallback) {
  */
 export function initAgentBridge(): void {
   openClawClient.connectApprovalWebSocket(async (request) => {
-    // Find which persona this approval is for (use first active agent as fallback)
-    const firstAgent = activeAgents.values().next().value as AgentInstance | undefined;
-    if (!firstAgent) {
+    // Resolve which persona this approval belongs to. The gateway sends an
+    // `agentId` in the approval message — prefer that. Fall back to the first
+    // active agent only when the gateway omits agentId (should never happen
+    // in multi-persona setups once fixed upstream).
+    let targetAgent: AgentInstance | undefined;
+    if (request.agentId) {
+      targetAgent = activeAgents.get(request.agentId);
+    }
+    if (!targetAgent) {
+      targetAgent = activeAgents.values().next().value as AgentInstance | undefined;
+    }
+    if (!targetAgent) {
       openClawClient.resolveApproval(request.requestId, false);
       return;
     }
 
-    // Notify UI about the tool call
-    onToolCallCallback?.({
-      personaId: firstAgent.personaId,
-      tool: request.tool,
-      action: request.action,
-    });
+    // Look up the real persona config so the ActionGuard receives accurate
+    // enabledTools / allowedPaths / confirmationLevel settings.
+    const persona = personaLookupFn?.(targetAgent.personaId);
+    if (!persona) {
+      console.warn('[agent-bridge] Persona lookup failed for', targetAgent.personaId, '— denying');
+      openClawClient.resolveApproval(request.requestId, false);
+      return;
+    }
 
-    // Route through ActionGuard if available
-    if (actionGuardFn) {
-      const actionRequest: ActionRequest = {
-        tool: request.tool,
-        action: request.action,
-        target: request.target,
-        content: request.content,
-        personaId: firstAgent.personaId,
-      };
-
-      // We need the persona config — for now use a minimal stub
-      // The main process should inject a persona lookup function
-      const evaluation = await actionGuardFn(actionRequest, {} as PersonaConfig);
+    // Delegate to the shared handleToolCall path so the security flow is
+    // identical regardless of whether the tool call originated from chat or
+    // from the WebSocket approval channel.
+    try {
+      const evaluation = await handleToolCall(
+        persona.id,
+        request.tool,
+        request.action,
+        request.target,
+        request.content,
+        persona,
+      );
       openClawClient.resolveApproval(request.requestId, evaluation.result === 'allow');
-    } else {
-      // No guard — deny by default
+    } catch (err) {
+      console.error('[agent-bridge] Tool call evaluation failed:', err);
       openClawClient.resolveApproval(request.requestId, false);
     }
   });

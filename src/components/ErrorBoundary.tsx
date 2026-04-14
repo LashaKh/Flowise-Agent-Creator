@@ -41,11 +41,11 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
       return (
         <div className="min-h-[400px] flex items-center justify-center p-8">
-          <div className="text-center max-w-md">
+          <div className="text-center max-w-md glass-strong rounded-2xl p-8 card-cosmic border border-white/10">
             {/* Error Icon */}
-            <div className="inline-flex items-center justify-center w-16 h-16 bg-red-100 rounded-full mb-6">
+            <div className="inline-flex items-center justify-center w-16 h-16 bg-red-500/15 border border-red-500/30 rounded-full mb-6">
               <svg
-                className="w-8 h-8 text-red-600"
+                className="w-8 h-8 text-red-400"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -60,17 +60,17 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             </div>
 
             {/* Error Message */}
-            <h2 className="text-xl font-semibold text-gray-900 mb-2">
+            <h2 className="text-xl font-display font-semibold text-white mb-2">
               Something went wrong
             </h2>
-            <p className="text-gray-500 mb-6">
+            <p className="text-gray-400 mb-6 font-body">
               An unexpected error occurred. Please try again or refresh the page.
             </p>
 
             {/* Error Details (development only) */}
             {this.state.error && import.meta.env.DEV && (
-              <div className="mb-6 p-4 bg-gray-100 rounded-lg text-left">
-                <p className="text-sm font-mono text-gray-700 break-all">
+              <div className="mb-6 p-4 glass border border-white/10 rounded-xl text-left">
+                <p className="text-sm font-mono text-gray-300 break-all">
                   {this.state.error.message}
                 </p>
               </div>
@@ -79,7 +79,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             {/* Reset Button */}
             <button
               onClick={this.handleReset}
-              className="px-6 py-2.5 text-white font-medium bg-blue-600 hover:bg-blue-700 active:bg-blue-800 rounded-lg transition-colors"
+              className="px-6 py-2.5 font-display font-semibold btn-cosmic rounded-xl transition-all hover:scale-105"
             >
               Try again
             </button>

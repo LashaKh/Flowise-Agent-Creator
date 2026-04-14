@@ -1,7 +1,8 @@
 import WebSocket from 'ws';
 import http from 'node:http';
+import https from 'node:https';
 import os from 'node:os';
-import { getConfiguredModel } from './openclaw-manager';
+import { getConfiguredModel, getProviderConfig, GATEWAY_TOKEN } from './openclaw-manager';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -9,6 +10,7 @@ import { getConfiguredModel } from './openclaw-manager';
 
 export interface ApprovalRequest {
   requestId: string;
+  agentId?: string;
   tool: string;
   action: string;
   target?: string;
@@ -37,7 +39,7 @@ type ChatMessage = Record<string, any>;
 
 const GATEWAY_PORT = 18789;
 const WS_URL = 'ws://127.0.0.1:18789';
-const GATEWAY_TOKEN = 'personahub-local';
+// GATEWAY_TOKEN is imported from openclaw-manager (random per launch).
 // ---------------------------------------------------------------------------
 // Tool definitions (OpenAI function-calling format)
 // ---------------------------------------------------------------------------
@@ -208,6 +210,16 @@ function streamingRequest(
 
         let buffer = '';
         let accumulated = '';
+        // Guard against double-done: if `[DONE]` arrives AND the stream then
+        // closes normally, both handlers would fire `onChunk(..., true)` and
+        // the renderer would persist an empty phantom row. Audit finding P2-1.
+        let resolved = false;
+        const finish = () => {
+          if (resolved) return;
+          resolved = true;
+          onChunk(accumulated, true);
+          resolve();
+        };
 
         res.setEncoding('utf-8');
 
@@ -226,8 +238,7 @@ function streamingRequest(
               const data = line.slice(6);
 
               if (data === '[DONE]') {
-                onChunk(accumulated, true);
-                resolve();
+                finish();
                 return;
               }
 
@@ -238,17 +249,16 @@ function streamingRequest(
                   accumulated += delta;
                   onChunk(delta, false);
                 }
-              } catch {
-                // Skip malformed JSON
+              } catch (err) {
+                // Surface parse failures instead of silently dropping them
+                // (audit finding M3). This helps debug gateway format drifts.
+                console.warn('[openclaw-client] SSE parse error:', (err as Error).message, data.slice(0, 200));
               }
             }
           }
         });
 
-        res.on('end', () => {
-          onChunk(accumulated, true);
-          resolve();
-        });
+        res.on('end', finish);
       },
     );
 
@@ -281,7 +291,9 @@ export async function sendMessage(
   modelOverride?: string,
   enabledTools?: string[],
 ): Promise<void> {
-  const model = modelOverride || getConfiguredModel();
+  // Gateway expects "openclaw" as the model — it routes to the actual AI
+  // model (gemini/claude) based on the config file internally.
+  const model = modelOverride || 'openclaw';
   const tools = enabledTools?.length ? buildToolDefs(enabledTools) : [];
 
   // Environment context so the AI knows where it is
@@ -346,6 +358,7 @@ export function connectApprovalWebSocket(
         const params = msg.params ?? msg.data ?? msg;
         onRequest({
           requestId: params.requestId,
+          agentId: params.agentId,
           tool: params.tool,
           action: params.action,
           target: params.target,
@@ -425,7 +438,7 @@ The system prompt should include:
 Write the prompt in second person ("You are..."). Make it vivid and specific — not generic. The persona should feel like a real character with opinions and quirks.`;
 
   const payload = JSON.stringify({
-    model: getConfiguredModel(),
+    model: 'openclaw',
     messages: [{ role: 'user', content: metaPrompt }],
     stream: false,
   });
@@ -477,6 +490,194 @@ Write the prompt in second person ("You are..."). Make it vivid and specific —
     });
 
     req.write(payload);
+    req.end();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// generateSpeech — cloud TTS via OpenClaw gateway (returns binary audio)
+// ---------------------------------------------------------------------------
+
+export async function generateSpeech(
+  text: string,
+  voiceId: string,
+  provider: string,
+): Promise<{ audioBuffer: ArrayBuffer; durationMs: number }> {
+  const payload = JSON.stringify({
+    model: `tts-1`,
+    input: text,
+    voice: voiceId,
+    provider,
+  });
+
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port: GATEWAY_PORT,
+        path: '/v1/audio/speech',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${GATEWAY_TOKEN}`,
+          'Content-Length': Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        // Collect as raw buffers — do NOT set encoding (binary data!)
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => { chunks.push(chunk); });
+        res.on('end', () => {
+          if (res.statusCode && res.statusCode >= 400) {
+            const errorBody = Buffer.concat(chunks).toString('utf-8');
+            reject(new Error(`TTS failed (${res.statusCode}): ${errorBody}`));
+            return;
+          }
+          const buffer = Buffer.concat(chunks);
+          // Estimate duration from audio size (rough: MP3 ~128kbps = 16KB/s)
+          const durationMs = Math.round((buffer.length / 16000) * 1000);
+          resolve({
+            audioBuffer: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+            durationMs,
+          });
+        });
+      },
+    );
+
+    req.on('error', (err) => {
+      reject(new Error(`Gateway connection failed: ${err.message}`));
+    });
+
+    req.setTimeout(30000, () => {
+      req.destroy();
+      reject(new Error('TTS request timed out'));
+    });
+
+    req.write(payload);
+    req.end();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// transcribeAudio — STT via direct provider API call
+// Calls Gemini or Anthropic directly (the gateway doesn't have a transcription
+// endpoint). Uses the same API key from ~/.openclaw/openclaw.json.
+// ---------------------------------------------------------------------------
+
+export async function transcribeAudio(
+  audioBuffer: Buffer,
+  mimeType: string,
+): Promise<string> {
+  const config = getProviderConfig();
+  if (!config) throw new Error('No AI provider configured — complete setup first');
+
+  const base64Audio = audioBuffer.toString('base64');
+  const prompt = 'Transcribe the following audio exactly as spoken. Output ONLY the transcribed text, nothing else — no quotes, no labels, no explanation.';
+
+  if (config.provider === 'google') {
+    return transcribeViaGemini(config.apiKey, base64Audio, mimeType, prompt);
+  } else {
+    return transcribeViaAnthropic(config.apiKey, base64Audio, mimeType, prompt);
+  }
+}
+
+function transcribeViaGemini(apiKey: string, base64Audio: string, mimeType: string, prompt: string): Promise<string> {
+  const body = JSON.stringify({
+    contents: [{
+      parts: [
+        { text: prompt },
+        { inline_data: { mime_type: mimeType, data: base64Audio } },
+      ],
+    }],
+  });
+
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      {
+        hostname: 'generativelanguage.googleapis.com',
+        path: `/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => { chunks.push(chunk); });
+        res.on('end', () => {
+          const responseBody = Buffer.concat(chunks).toString('utf-8');
+          if (res.statusCode && res.statusCode >= 400) {
+            reject(new Error(`Gemini transcription failed (${res.statusCode}): ${responseBody.slice(0, 200)}`));
+            return;
+          }
+          try {
+            const json = JSON.parse(responseBody);
+            const text = json?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            resolve(text.trim());
+          } catch {
+            reject(new Error('Failed to parse Gemini response'));
+          }
+        });
+      },
+    );
+
+    req.on('error', (err) => reject(new Error(`Gemini API error: ${err.message}`)));
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Transcription timed out')); });
+    req.write(body);
+    req.end();
+  });
+}
+
+function transcribeViaAnthropic(apiKey: string, base64Audio: string, mimeType: string, prompt: string): Promise<string> {
+  const body = JSON.stringify({
+    model: 'claude-sonnet-4-5-20241022',
+    max_tokens: 1024,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: prompt },
+        { type: 'audio', source: { type: 'base64', media_type: mimeType, data: base64Audio } },
+      ],
+    }],
+  });
+
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      {
+        hostname: 'api.anthropic.com',
+        path: '/v1/messages',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'Content-Length': Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => { chunks.push(chunk); });
+        res.on('end', () => {
+          const responseBody = Buffer.concat(chunks).toString('utf-8');
+          if (res.statusCode && res.statusCode >= 400) {
+            reject(new Error(`Anthropic transcription failed (${res.statusCode}): ${responseBody.slice(0, 200)}`));
+            return;
+          }
+          try {
+            const json = JSON.parse(responseBody);
+            const text = json?.content?.[0]?.text || '';
+            resolve(text.trim());
+          } catch {
+            reject(new Error('Failed to parse Anthropic response'));
+          }
+        });
+      },
+    );
+
+    req.on('error', (err) => reject(new Error(`Anthropic API error: ${err.message}`)));
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Transcription timed out')); });
+    req.write(body);
     req.end();
   });
 }

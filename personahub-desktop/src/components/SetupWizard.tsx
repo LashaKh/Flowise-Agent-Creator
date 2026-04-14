@@ -10,7 +10,6 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
   const [step, setStep] = useState<WizardStep>('apikey');
   const [apiKey, setApiKey] = useState('');
   const [provider, setProvider] = useState<'anthropic' | 'google'>('google');
-  const [installProgress, setInstallProgress] = useState(0);
   const [installError, setInstallError] = useState<string | null>(null);
 
   return (
@@ -30,9 +29,7 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
             <InstallingStep
               apiKey={apiKey}
               provider={provider}
-              progress={installProgress}
               error={installError}
-              onProgress={setInstallProgress}
               onError={setInstallError}
               onComplete={onComplete}
             />
@@ -112,87 +109,68 @@ function ApiKeyStep({
         disabled={!apiKey.trim()}
         className="w-full py-3 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
       >
-        Install & Get Started
+        Get Started
       </button>
     </div>
   );
 }
 
-// ─── Step 2: Installing ─────────────────────────
+// ─── Step 2: Starting AI Engine ─────────────────
 
 function InstallingStep({
   apiKey,
   provider,
-  progress,
   error,
-  onProgress,
   onError,
   onComplete,
 }: {
   apiKey: string;
   provider: 'anthropic' | 'google';
-  progress: number;
   error: string | null;
-  onProgress: (pct: number) => void;
   onError: (err: string | null) => void;
   onComplete: () => void;
 }) {
-  const [started, setStarted] = useState(false);
+  // Audit finding P3-D-6: the previous `started` flag + empty-deps useEffect
+  // could never re-run when the Retry button fired. Use an incrementing
+  // attempt counter in the dependency array so a click actually triggers
+  // a fresh install attempt.
+  const [attempt, setAttempt] = useState(0);
 
-  useEffect(() => {
-    if (started) return;
-    setStarted(true);
-    startInstall();
-  }, []);
-
-  async function startInstall() {
+  async function startEngine() {
     onError(null);
-    onProgress(0);
     try {
-      window.electronAPI?.openclaw.onProgress((pct) => {
-        onProgress(pct);
-        if (pct >= 100) {
-          onComplete();
-        }
-      });
       await window.electronAPI?.openclaw.install(apiKey, provider);
+      onComplete();
     } catch (err) {
-      onError(err instanceof Error ? err.message : 'Installation failed');
+      onError(err instanceof Error ? err.message : 'Failed to start AI engine');
     }
   }
 
-  const statusText = progress < 40
-    ? 'Downloading runtime...'
-    : progress < 80
-    ? 'Installing AI agent...'
-    : 'Starting gateway...';
+  useEffect(() => {
+    startEngine();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attempt]);
 
   return (
     <div className="space-y-6">
       <div className="text-center space-y-1">
         <h2 className="text-xl font-semibold text-white">Setting Up</h2>
-        <p className="text-gray-400 text-sm">Installing the AI runtime on your machine.</p>
+        <p className="text-gray-400 text-sm">Starting AI engine...</p>
       </div>
 
       {error ? (
         <div className="space-y-4">
           <p className="text-red-400 text-sm text-center">{error}</p>
           <button
-            onClick={() => { setStarted(false); }}
+            onClick={() => setAttempt((n) => n + 1)}
             className="w-full py-3 border border-gray-700 text-gray-300 rounded-lg font-medium hover:bg-gray-900 transition-colors"
           >
             Retry
           </button>
         </div>
       ) : (
-        <div className="space-y-3">
-          <div className="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
-            <div
-              className="bg-indigo-600 h-2 rounded-full transition-all duration-300"
-              style={{ width: `${progress}%` }}
-            />
-          </div>
-          <p className="text-sm text-gray-400 text-center">{statusText}</p>
+        <div className="flex justify-center">
+          <div className="h-8 w-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
         </div>
       )}
     </div>

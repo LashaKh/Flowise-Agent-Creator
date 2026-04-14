@@ -15,19 +15,7 @@ export default function App() {
   // Ensure at least one persona exists so the user always has something to chat with
   async function ensureDefaultPersona() {
     try {
-      const rows = await window.electronAPI.db.all(
-        `SELECT id FROM persona_configs WHERE status = 'active' LIMIT 1`,
-        []
-      );
-      if (rows.length === 0) {
-        const id = crypto.randomUUID();
-        const now = new Date().toISOString();
-        await window.electronAPI.db.run(
-          `INSERT OR IGNORE INTO persona_configs (id, name, system_prompt, status, confirmation_level, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [id, 'Assistant', 'You are a helpful AI assistant.', 'active', 'balanced', now, now]
-        );
-      }
+      await window.electronAPI.agent.ensureDefault();
     } catch (err) {
       console.error('Failed to ensure default persona:', err);
     }

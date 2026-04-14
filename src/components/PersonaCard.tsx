@@ -1,6 +1,4 @@
-import { useState } from 'react';
 import type { Persona, PersonaStatus } from '../types';
-import { DeleteConfirmation } from './DeleteConfirmation';
 
 interface PersonaCardProps {
   persona: Persona;
@@ -38,23 +36,18 @@ function formatDate(date: Date): string {
 }
 
 /**
- * Card component for displaying a single persona
+ * Card component for displaying a single persona.
+ *
+ * NOTE: The card delegates delete confirmation to the parent (App.tsx) so
+ * there's only ONE confirmation modal shown to the user. Audit finding P2-7
+ * removed the previous double-modal flow where both PersonaCard and App.tsx
+ * rendered their own DeleteConfirmation back-to-back.
  */
 export function PersonaCard({ persona, onSelect, onDelete, onChat }: PersonaCardProps) {
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const statusStyles = getStatusStyles(persona.status);
 
   const handleDeleteClick = () => {
-    setShowDeleteConfirm(true);
-  };
-
-  const handleConfirmDelete = () => {
-    setShowDeleteConfirm(false);
     onDelete(persona.id);
-  };
-
-  const handleCancelDelete = () => {
-    setShowDeleteConfirm(false);
   };
 
   return (
@@ -111,14 +104,6 @@ export function PersonaCard({ persona, onSelect, onDelete, onChat }: PersonaCard
           </button>
         </div>
       </div>
-
-      {/* Delete Confirmation Modal */}
-      <DeleteConfirmation
-        isOpen={showDeleteConfirm}
-        personaName={persona.name}
-        onConfirm={handleConfirmDelete}
-        onCancel={handleCancelDelete}
-      />
     </>
   );
 }

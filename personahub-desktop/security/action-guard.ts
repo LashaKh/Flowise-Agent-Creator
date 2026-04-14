@@ -143,19 +143,14 @@ function evaluateByConfirmationLevel(
 }
 
 /**
- * Log an action to the SQLite database.
+ * Log an action to the SQLite database. The parameter type is the
+ * "without id/createdAt" shape because `insertActionLog` generates those
+ * server-side and discarded any caller-provided values before. Audit P5-B-6.
  */
-export function logAction(entry: ActionLogEntry): ActionLogEntry {
-  return getDatabase().insertActionLog({
-    personaId: entry.personaId,
-    tool: entry.tool,
-    action: entry.action,
-    target: entry.target,
-    contentPreview: entry.contentPreview,
-    result: entry.result,
-    denyReason: entry.denyReason,
-    backupId: entry.backupId,
-  });
+export function logAction(
+  entry: Omit<ActionLogEntry, 'id' | 'createdAt'>,
+): ActionLogEntry {
+  return getDatabase().insertActionLog(entry);
 }
 
 /**

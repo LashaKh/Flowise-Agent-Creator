@@ -5,6 +5,7 @@
  * and denied attempt is logged here with timestamps and undo buttons.
  */
 import { useState, useEffect, useCallback } from 'react';
+import toast from 'react-hot-toast';
 import type { ActionLogEntry } from '../types';
 
 type FilterResult = 'all' | 'allowed' | 'denied' | 'confirmed' | 'undone';
@@ -34,9 +35,21 @@ export default function ActivityLog() {
   }, [loadEntries]);
 
   const handleUndo = async (backupId: string) => {
-    const result = await window.electronAPI.backup.undo(backupId);
-    if (result.success) {
-      loadEntries(); // Refresh list
+    // Audit finding: wrap IPC call in try/catch so failures surface as
+    // alerts instead of silent no-ops, and honor result.error when the
+    // backup can't be restored.
+    try {
+      const result = await window.electronAPI.backup.undo(backupId);
+      if (result.success) {
+        loadEntries(); // Refresh list
+      } else {
+        const msg = (result as { error?: string }).error ?? 'Undo failed';
+        console.error('[ActivityLog] Undo failed:', msg);
+        toast.error(`Could not undo action: ${msg}`);
+      }
+    } catch (err) {
+      console.error('[ActivityLog] Undo threw:', err);
+      toast.error(`Undo failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 

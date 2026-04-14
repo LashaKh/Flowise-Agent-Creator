@@ -1,27 +1,29 @@
 /**
  * OpenClaw Manager
  *
- * Manages the full OpenClaw lifecycle: downloading Node.js 22, installing
- * the OpenClaw package, writing config, and running the gateway process.
+ * Manages the OpenClaw gateway lifecycle. OpenClaw is bundled inside the app
+ * (as a dependency in node_modules), so there's nothing to download at runtime.
  *
- * Think of this as an "app-within-an-app" installer — it sets up everything
- * OpenClaw needs in ~/.personahub/runtime/ so the AI agents can run locally.
+ * The gateway runs using Electron's own Node.js via ELECTRON_RUN_AS_NODE,
+ * which works identically on macOS, Windows, and Linux.
  */
-import { execSync, spawn, ChildProcess } from 'node:child_process';
+import { spawn, ChildProcess } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import https from 'node:https';
 import http from 'node:http';
+import { app } from 'electron';
 
 // ─── Constants ──────────────────────────────────────
 
-const NODE_VERSION = '22.22.0';
-const MINGIT_VERSION = '2.47.1';
 const GATEWAY_PORT = 18789;
-const GATEWAY_TOKEN = 'personahub-local';
-const RUNTIME_DIR = path.join(os.homedir(), '.personahub', 'runtime');
-const MINGIT_DIR = path.join(RUNTIME_DIR, 'mingit');
+// Random gateway token generated per app launch. The old hardcoded
+// `personahub-local` token let any local process talk to the gateway's
+// file-write/exec tools (audit finding P2-6). We generate a fresh secret
+// at process start and write it into ~/.openclaw/openclaw.json so the
+// gateway and client agree.
+export const GATEWAY_TOKEN = crypto.randomBytes(32).toString('hex');
 const OPENCLAW_CONFIG_DIR = path.join(os.homedir(), '.openclaw');
 const OPENCLAW_CONFIG_PATH = path.join(OPENCLAW_CONFIG_DIR, 'openclaw.json');
 
@@ -30,347 +32,34 @@ const OPENCLAW_CONFIG_PATH = path.join(OPENCLAW_CONFIG_DIR, 'openclaw.json');
 let gatewayProcess: ChildProcess | null = null;
 let installedCache: boolean | null = null;
 
-// ─── Platform Helpers ───────────────────────────────
-
-type SupportedPlatform = 'darwin-arm64' | 'darwin-x64' | 'win32-x64' | 'linux-x64';
-
-function getPlatformKey(): SupportedPlatform {
-  const plat = process.platform;
-  const arch = process.arch;
-
-  if (plat === 'darwin' && arch === 'arm64') return 'darwin-arm64';
-  if (plat === 'darwin' && arch === 'x64') return 'darwin-x64';
-  if (plat === 'win32' && arch === 'x64') return 'win32-x64';
-  if (plat === 'linux' && arch === 'x64') return 'linux-x64';
-
-  throw new Error(`Unsupported platform: ${plat}-${arch}`);
-}
-
-function isWindows(): boolean {
-  return process.platform === 'win32';
-}
+// ─── Path Helper ────────────────────────────────────
 
 /**
- * Build the Node.js archive download URL for the current platform.
+ * Get the path to openclaw's entry script inside the app bundle.
+ *
+ * In dev mode: node_modules/openclaw/openclaw.mjs (relative to project root)
+ * In production: the asar.unpacked copy so it can be spawned as a process
  */
-function getNodeDownloadUrl(): string {
-  const key = getPlatformKey();
-
-  if (key === 'win32-x64') {
-    return `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-win-x64.zip`;
-  }
-
-  // Map our keys to Node.js naming: darwin-arm64, darwin-x64, linux-x64
-  const [plat, arch] = key.split('-') as [string, string];
-  return `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${plat}-${arch}.tar.gz`;
-}
-
-/**
- * Get the folder name that the Node.js archive extracts to.
- */
-function getNodeFolderName(): string {
-  const key = getPlatformKey();
-  if (key === 'win32-x64') return `node-v${NODE_VERSION}-win-x64`;
-
-  const [plat, arch] = key.split('-') as [string, string];
-  return `node-v${NODE_VERSION}-${plat}-${arch}`;
-}
-
-/**
- * Get the path to the node binary inside our runtime directory.
- */
-function getNodePath(): string {
-  const folder = getNodeFolderName();
-  if (isWindows()) {
-    return path.join(RUNTIME_DIR, folder, 'node.exe');
-  }
-  return path.join(RUNTIME_DIR, folder, 'bin', 'node');
-}
-
-/**
- * Get the path to npm inside our runtime directory.
- */
-function getNpmPath(): string {
-  const folder = getNodeFolderName();
-  if (isWindows()) {
-    return path.join(RUNTIME_DIR, folder, 'npm.cmd');
-  }
-  return path.join(RUNTIME_DIR, folder, 'bin', 'npm');
-}
-
-/**
- * Get the npm global bin directory for our runtime's Node.
- */
-function getNpmGlobalBin(): string {
-  const folder = getNodeFolderName();
-
-  // On Windows, npm installs globals to %APPDATA%\npm by default (not our runtime dir).
-  // We use --prefix during install to force it into our runtime dir, so the bin is right there.
-  // On macOS/Linux, it goes into the node folder's bin/.
-  if (isWindows()) {
-    return path.join(RUNTIME_DIR, folder);
-  }
-  return path.join(RUNTIME_DIR, folder, 'bin');
-}
-
-/**
- * Get the path to the openclaw binary.
- */
-function getOpenClawBinPath(): string {
-  const globalBin = getNpmGlobalBin();
-  const binName = isWindows() ? 'openclaw.cmd' : 'openclaw';
-  return path.join(globalBin, binName);
-}
-
-// Exported for testing
-export { getPlatformKey, getNodeDownloadUrl, getNodePath, getNpmPath, getOpenClawBinPath };
-
-// ─── Download Helper ────────────────────────────────
-
-/**
- * Download a file from a URL, following redirects.
- * Reports progress via callback (bytes downloaded / total bytes).
- */
-function downloadFile(
-  url: string,
-  destPath: string,
-  onProgress: (downloaded: number, total: number) => void
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const request = https.get(url, (response) => {
-      // Follow redirects (301, 302, 307, 308)
-      if (
-        response.statusCode &&
-        response.statusCode >= 300 &&
-        response.statusCode < 400 &&
-        response.headers.location
-      ) {
-        downloadFile(response.headers.location, destPath, onProgress)
-          .then(resolve)
-          .catch(reject);
-        return;
-      }
-
-      if (response.statusCode !== 200) {
-        reject(new Error(`Download failed with status ${response.statusCode}`));
-        return;
-      }
-
-      const totalBytes = parseInt(response.headers['content-length'] || '0', 10);
-      let downloadedBytes = 0;
-
-      const file = fs.createWriteStream(destPath);
-
-      response.on('data', (chunk: Buffer) => {
-        downloadedBytes += chunk.length;
-        onProgress(downloadedBytes, totalBytes);
-      });
-
-      response.pipe(file);
-
-      file.on('finish', () => {
-        file.close();
-        resolve();
-      });
-
-      file.on('error', (err) => {
-        fs.unlink(destPath, () => {}); // Clean up partial file
-        reject(err);
-      });
-    });
-
-    request.on('error', reject);
-    request.setTimeout(60000, () => {
-      request.destroy();
-      reject(new Error('Download timed out'));
-    });
-  });
+export function getOpenClawEntryPath(): string {
+  const appPath = app.getAppPath();
+  const base = app.isPackaged
+    ? appPath.replace('app.asar', 'app.asar.unpacked')
+    : appPath;
+  return path.join(base, 'node_modules', 'openclaw', 'openclaw.mjs');
 }
 
 // ─── Public API ─────────────────────────────────────
 
 /**
- * Check if Node.js 22 and OpenClaw are already installed in ~/.personahub/runtime/.
+ * Check if OpenClaw is ready to run:
+ * - The bundled entry script exists (it always should)
+ * - The config file exists (means the user has entered their API key)
  */
 export async function checkInstallation(): Promise<boolean> {
-  try {
-    const nodePath = getNodePath();
-    const openclawPath = getOpenClawBinPath();
-
-    const nodeExists = fs.existsSync(nodePath);
-    const openclawExists = fs.existsSync(openclawPath);
-    const configExists = fs.existsSync(OPENCLAW_CONFIG_PATH);
-
-    const result = nodeExists && openclawExists && configExists;
-    installedCache = result;
-    return result;
-  } catch {
-    installedCache = false;
-    return false;
-  }
-}
-
-/**
- * Download MinGit for Windows if git is not already available.
- * Many Windows PCs don't have git, but npm needs it for some dependencies.
- * MinGit is a ~30MB portable git that we extract to ~/.personahub/runtime/mingit/.
- */
-async function ensureGitOnWindows(onProgress: (pct: number) => void): Promise<void> {
-  // Check if git is already available (system-installed or previously downloaded)
-  const mingitCmd = path.join(MINGIT_DIR, 'cmd', 'git.exe');
-  if (fs.existsSync(mingitCmd)) {
-    console.log('[openclaw] MinGit already exists, skipping download');
-    return;
-  }
-
-  try {
-    execSync('git --version', { stdio: 'pipe', timeout: 5000 });
-    console.log('[openclaw] System git found, skipping MinGit download');
-    return;
-  } catch {
-    // No git — need to download MinGit
-  }
-
-  console.log('[openclaw] Git not found, downloading MinGit...');
-  const zipUrl = `https://github.com/git-for-windows/git/releases/download/v${MINGIT_VERSION}.windows.1/MinGit-${MINGIT_VERSION}-64-bit.zip`;
-  const zipPath = path.join(RUNTIME_DIR, 'mingit.zip');
-
-  await downloadFile(zipUrl, zipPath, (downloaded, total) => {
-    if (total > 0) {
-      const pct = 80 + Math.round((downloaded / total) * 5); // 80-85%
-      onProgress(pct);
-    }
-  });
-
-  // Extract MinGit
-  fs.mkdirSync(MINGIT_DIR, { recursive: true });
-  try {
-    execSync(
-      `powershell -Command "Expand-Archive -Path \\"${zipPath}\\" -DestinationPath \\"${MINGIT_DIR}\\" -Force"`,
-      { timeout: 60000 }
-    );
-    fs.unlinkSync(zipPath);
-    console.log('[openclaw] MinGit extracted to', MINGIT_DIR);
-  } catch (err) {
-    try { fs.unlinkSync(zipPath); } catch { /* ignore */ }
-    throw new Error(`Failed to extract MinGit: ${err}`);
-  }
-}
-
-/**
- * Download Node.js 22 and install OpenClaw globally.
- *
- * Progress stages:
- *  0-40%  — Downloading Node.js archive
- *  40-80% — Extracting archive and setting up
- *  80-85% — Downloading MinGit (Windows only)
- *  85-100% — Installing OpenClaw via npm
- */
-export async function installRuntime(
-  onProgress: (pct: number) => void
-): Promise<void> {
-  // 1. Create runtime directory
-  fs.mkdirSync(RUNTIME_DIR, { recursive: true });
-
-  const nodePath = getNodePath();
-  const nodeAlreadyExists = fs.existsSync(nodePath);
-
-  if (nodeAlreadyExists) {
-    // Skip download + extract — Node.js is already installed
-    console.log('[openclaw] Node.js already exists, skipping download');
-    onProgress(80);
-  } else {
-    const downloadUrl = getNodeDownloadUrl();
-    const isZip = downloadUrl.endsWith('.zip');
-    const archiveExt = isZip ? '.zip' : '.tar.gz';
-    const archivePath = path.join(RUNTIME_DIR, `node${archiveExt}`);
-
-    // 2. Download Node.js archive (0-40%)
-    onProgress(0);
-
-    await downloadFile(downloadUrl, archivePath, (downloaded, total) => {
-      if (total > 0) {
-        const pct = Math.round((downloaded / total) * 40);
-        onProgress(pct);
-      }
-    });
-
-    onProgress(40);
-
-  // 3. Extract archive (40-80%)
-  try {
-    if (isZip) {
-      // Windows: use PowerShell to extract zip
-      execSync(
-        `powershell -Command "Expand-Archive -Path \\"${archivePath}\\" -DestinationPath \\"${RUNTIME_DIR}\\" -Force"`,
-        { timeout: 120000 }
-      );
-    } else {
-      // macOS/Linux: use tar
-      execSync(`tar xzf "${archivePath}" -C "${RUNTIME_DIR}"`, {
-        timeout: 120000,
-      });
-    }
-    onProgress(70);
-
-    // Clean up the archive file
-    fs.unlinkSync(archivePath);
-    onProgress(80);
-  } catch (err) {
-    // Clean up on failure
-    try {
-      fs.unlinkSync(archivePath);
-    } catch {
-      // ignore cleanup errors
-    }
-    throw new Error(`Failed to extract Node.js archive: ${err}`);
-  }
-  } // end else (nodeAlreadyExists)
-
-  // 4. On Windows, ensure git is available (npm needs it for some dependencies)
-  if (isWindows()) {
-    await ensureGitOnWindows(onProgress);
-  }
-
-  // 5. Install OpenClaw globally via our Node.js (90-100%)
-  const openclawBin = getOpenClawBinPath();
-  if (fs.existsSync(openclawBin)) {
-    console.log('[openclaw] OpenClaw already installed, skipping npm install');
-    onProgress(100);
-  } else {
-    const npmPath = getNpmPath();
-    if (!fs.existsSync(nodePath)) {
-      throw new Error(`Node binary not found after extraction at ${nodePath}`);
-    }
-    try {
-      // On Windows: run npm.cmd directly (not through node.exe — it's a batch script).
-      // --prefix: install into our runtime dir so we can find openclaw.cmd later.
-      // Add MinGit to PATH so npm can use git for dependencies that need it.
-      const runtimePrefix = path.join(RUNTIME_DIR, getNodeFolderName());
-      const installCmd = isWindows()
-        ? `"${npmPath}" install -g --prefix "${runtimePrefix}" openclaw@latest`
-        : `"${nodePath}" "${npmPath}" install -g openclaw@latest`;
-
-      // 10 minutes — npm install can be slow on Windows (CI takes ~6 min)
-      const execOpts: { timeout: number; stdio: 'pipe'; env?: NodeJS.ProcessEnv } = {
-        timeout: 600000,
-        stdio: 'pipe',
-      };
-
-      // On Windows, inject MinGit into PATH so npm can find git
-      if (isWindows()) {
-        const mingitBin = path.join(MINGIT_DIR, 'cmd');
-        execOpts.env = { ...process.env, PATH: `${mingitBin};${process.env.PATH}` };
-      }
-
-      execSync(installCmd, execOpts);
-      onProgress(100);
-    } catch (err) {
-      throw new Error(`Failed to install OpenClaw: ${err}`);
-    }
-  }
-
-  installedCache = true;
+  const configExists = fs.existsSync(OPENCLAW_CONFIG_PATH);
+  const binaryExists = fs.existsSync(getOpenClawEntryPath());
+  installedCache = configExists && binaryExists;
+  return installedCache;
 }
 
 /**
@@ -422,35 +111,52 @@ export function writeConfig(
 }
 
 /**
+ * Patch the gateway auth token in the existing config file.
+ * Called on auto-start so the gateway and app agree on the token
+ * (GATEWAY_TOKEN is regenerated every launch for security).
+ */
+export function refreshConfigToken(): void {
+  try {
+    const raw = fs.readFileSync(OPENCLAW_CONFIG_PATH, 'utf-8');
+    const config = JSON.parse(raw);
+    if (!config.gateway) config.gateway = {};
+    if (!config.gateway.auth) config.gateway.auth = {};
+    config.gateway.auth.token = GATEWAY_TOKEN;
+    fs.writeFileSync(OPENCLAW_CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn('[openclaw] Failed to refresh config token:', err);
+  }
+}
+
+/**
  * Start the OpenClaw gateway process.
- * Spawns it as a child process so we can manage its lifecycle.
+ *
+ * Uses Electron's own Node.js (process.execPath) with ELECTRON_RUN_AS_NODE=1
+ * to run the bundled openclaw entry script. This works on all platforms
+ * without any platform-specific branching.
  */
 export async function startGateway(): Promise<void> {
   if (gatewayProcess) {
     return; // Already running
   }
 
-  const nodePath = getNodePath();
-  const openclawBin = getOpenClawBinPath();
+  const entryPath = getOpenClawEntryPath();
 
-  if (!fs.existsSync(openclawBin)) {
-    throw new Error(`OpenClaw binary not found at ${openclawBin}`);
+  if (!fs.existsSync(entryPath)) {
+    throw new Error(`OpenClaw entry script not found at ${entryPath}`);
   }
 
-  console.log(`[openclaw] starting gateway: ${nodePath} ${openclawBin} gateway --port ${GATEWAY_PORT}`);
+  console.log(`[openclaw] starting gateway: ${process.execPath} ${entryPath} gateway --port ${GATEWAY_PORT}`);
 
-  // On Windows, openclaw.cmd is a batch script — spawn it directly with shell: true
-  // so cmd.exe handles it. On macOS/Linux, run it through our bundled node binary.
-  gatewayProcess = isWindows()
-    ? spawn(openclawBin, ['gateway', '--port', String(GATEWAY_PORT)], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: false,
-        shell: true,
-      })
-    : spawn(nodePath, [openclawBin, 'gateway', '--port', String(GATEWAY_PORT)], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: false,
-      });
+  gatewayProcess = spawn(
+    process.execPath,
+    [entryPath, 'gateway', '--port', String(GATEWAY_PORT)],
+    {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: false,
+    }
+  );
 
   gatewayProcess.stdout?.on('data', (data: Buffer) => {
     console.log(`[openclaw:stdout] ${data.toString().trim()}`);
@@ -561,5 +267,43 @@ export function getConfiguredModel(): string {
     return config?.agents?.defaults?.model?.primary ?? 'google/gemini-2.5-flash';
   } catch {
     return 'google/gemini-2.5-flash';
+  }
+}
+
+/**
+ * Read the provider name and API key from the config file.
+ * Used for direct API calls (e.g. speech-to-text) that bypass the gateway.
+ */
+export function getProviderConfig(): { provider: 'google' | 'anthropic'; apiKey: string } | null {
+  try {
+    const raw = fs.readFileSync(OPENCLAW_CONFIG_PATH, 'utf-8');
+    const config = JSON.parse(raw);
+    const providers = config?.models?.providers;
+    if (!providers) return null;
+
+    for (const name of ['google', 'anthropic'] as const) {
+      if (providers[name]?.apiKey) {
+        return { provider: name, apiKey: providers[name].apiKey };
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Clean up old runtime downloads from ~/.personahub/runtime/.
+ * Previous versions downloaded Node.js + openclaw there; now it's bundled.
+ */
+export function cleanupOldRuntime(): void {
+  const oldRuntime = path.join(os.homedir(), '.personahub', 'runtime');
+  if (fs.existsSync(oldRuntime)) {
+    try {
+      fs.rmSync(oldRuntime, { recursive: true, force: true });
+      console.log('[openclaw] Cleaned up old runtime directory:', oldRuntime);
+    } catch (err) {
+      console.warn('[openclaw] Failed to clean up old runtime:', err);
+    }
   }
 }

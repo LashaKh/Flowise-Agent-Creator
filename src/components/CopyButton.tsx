@@ -15,7 +15,7 @@ export function CopyButton({ text, label = 'Copy' }: CopyButtonProps) {
       setCopied(true);
       toast.success('Copied to clipboard');
       setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
+    } catch {
       toast.error('Failed to copy to clipboard');
     }
   };
@@ -23,11 +23,11 @@ export function CopyButton({ text, label = 'Copy' }: CopyButtonProps) {
   return (
     <button
       onClick={handleCopy}
-      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md transition-colors"
+      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-display font-medium text-gray-300 glass hover:glass-strong border border-white/10 rounded-lg transition-all"
     >
       {copied ? (
         <svg
-          className="w-4 h-4 text-green-600"
+          className="w-4 h-4 text-green-400"
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"

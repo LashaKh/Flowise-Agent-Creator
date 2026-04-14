@@ -44,6 +44,21 @@ interface PersonaRow {
   updated_at: string;
 }
 
+/**
+ * Parse JSON safely, returning a fallback on any error. A single corrupted
+ * JSON cell was previously enough to crash `getAllPersonas()` via unhandled
+ * `JSON.parse` throws (audit finding P3-C-2).
+ */
+function safeJsonParse<T>(value: string | null | undefined, fallback: T): T {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch (err) {
+    console.warn('[local-db] Corrupted JSON in DB row, using fallback:', err);
+    return fallback;
+  }
+}
+
 function rowToPersona(row: PersonaRow): PersonaConfig {
   return {
     id: row.id,
@@ -53,16 +68,16 @@ function rowToPersona(row: PersonaRow): PersonaConfig {
     chatflowId: row.chatflow_id,
     apiEndpoint: row.api_endpoint,
     status: row.status as PersonaConfig['status'],
-    enabledTools: JSON.parse(row.enabled_tools),
-    allowedPaths: JSON.parse(row.allowed_paths),
-    blockedPaths: JSON.parse(row.blocked_paths),
+    enabledTools: safeJsonParse(row.enabled_tools, [] as string[]),
+    allowedPaths: safeJsonParse(row.allowed_paths, [] as PersonaConfig['allowedPaths']),
+    blockedPaths: safeJsonParse(row.blocked_paths, [] as string[]),
     confirmationLevel: row.confirmation_level as PersonaConfig['confirmationLevel'],
     dangerousToolsEnabled: row.dangerous_tools_enabled === 1,
     activityLogging: row.activity_logging === 1,
     undoEnabled: row.undo_enabled === 1,
     sandboxEnabled: row.sandbox_enabled === 1,
-    knowledgeBaseRefs: JSON.parse(row.knowledge_base_refs),
-    settings: JSON.parse(row.settings),
+    knowledgeBaseRefs: safeJsonParse(row.knowledge_base_refs, [] as PersonaConfig['knowledgeBaseRefs']),
+    settings: safeJsonParse(row.settings, {} as PersonaConfig['settings']),
     syncedAt: row.synced_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -424,12 +439,16 @@ export class LocalDB {
   insertChatMessage(msg: Omit<ChatMessage, 'id' | 'createdAt'>): ChatMessage {
     const id = uuid();
     const createdAt = new Date().toISOString();
-    this.db.prepare(`
-      INSERT INTO chat_messages (id, session_id, role, content, is_streaming, error, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(id, msg.sessionId, msg.role, msg.content, msg.isStreaming ? 1 : 0, msg.error ?? null, createdAt);
-    // Also touch the session's updated_at
-    this.db.prepare('UPDATE chat_sessions SET updated_at = ? WHERE id = ?').run(createdAt, msg.sessionId);
+    // Wrap the two writes in a transaction so a crash between statements
+    // can't leave the session's updated_at stale relative to its messages
+    // (audit finding P3-C-1).
+    this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO chat_messages (id, session_id, role, content, is_streaming, error, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(id, msg.sessionId, msg.role, msg.content, msg.isStreaming ? 1 : 0, msg.error ?? null, createdAt);
+      this.db.prepare('UPDATE chat_sessions SET updated_at = ? WHERE id = ?').run(createdAt, msg.sessionId);
+    })();
     return { ...msg, id, createdAt };
   }
 

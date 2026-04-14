@@ -5,6 +5,7 @@
  * The user must approve before the changes take effect locally.
  */
 import type { PermissionEscalation } from '../types';
+import Modal from './Modal';
 
 interface PermissionEscalationProps {
   escalation: PermissionEscalation;
@@ -26,9 +27,15 @@ export default function PermissionEscalationDialog({
   if (!hasChanges) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-      <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl">
-        <h2 className="text-lg font-semibold text-yellow-400 mb-1">
+    <Modal
+      isOpen={true}
+      onClose={onDeny}
+      labelledBy="permission-escalation-title"
+      className="bg-gray-900 border border-gray-700 rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl"
+      closeOnBackdrop={false}
+    >
+      <>
+        <h2 id="permission-escalation-title" className="text-lg font-semibold text-yellow-400 mb-1">
           Permission Update Required
         </h2>
         <p className="text-sm text-gray-400 mb-4">
@@ -92,7 +99,7 @@ export default function PermissionEscalationDialog({
             Approve Changes
           </button>
         </div>
-      </div>
-    </div>
+      </>
+    </Modal>
   );
 }

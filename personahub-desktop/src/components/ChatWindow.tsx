@@ -1,9 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
+import toast from 'react-hot-toast';
 import ChatSidebar from './ChatSidebar';
+import Modal from './Modal';
 import ChatMessages from './ChatMessages';
 import ChatInput from './ChatInput';
 import PersonaSettingsPanel from './PersonaSettingsPanel';
+import AvatarFace from './AvatarFace';
 import { useChat, clearSessionCache } from '../hooks/useChat';
+import { useVoiceOutput } from '../hooks/useVoiceOutput';
+import type { GlobalVoicePrefs, AvatarStyleId } from '../types';
 
 interface SidebarPersona {
   id: string;
@@ -14,12 +19,37 @@ interface SidebarPersona {
   pinned?: boolean;
   messageCount?: number;
   lastActiveAt?: string | null;
+  avatarStyleId?: string;
+  avatarAccentHue?: number;
 }
 
 export default function ChatWindow() {
   const [activePersonaId, setActivePersonaId] = useState<string | null>(null);
   const [personas, setPersonas] = useState<SidebarPersona[]>([]);
-  const { messages, isStreaming, sendMessage } = useChat(activePersonaId);
+  const [faceCollapsed, setFaceCollapsed] = useState(false);
+
+  // Load global voice prefs so toggling voice in Settings actually takes
+  // effect here. Previously the voice hook was hardcoded to voiceEnabled=true
+  // and voiceProvider='os-native' — the Settings panel was decorative
+  // (audit finding P2-8).
+  const [voicePrefs, setVoicePrefs] = useState<GlobalVoicePrefs | null>(null);
+  useEffect(() => {
+    window.electronAPI.voice
+      .getPrefs()
+      .then(setVoicePrefs)
+      .catch((err) => console.warn('[ChatWindow] Failed to load voice prefs:', err));
+  }, []);
+
+  // Voice output hook
+  const voiceOutput = useVoiceOutput({
+    personaId: activePersonaId,
+    voiceEnabled: voicePrefs?.voiceOutputEnabled ?? false,
+    voiceProvider: voicePrefs?.defaultProvider ?? 'os-native',
+  });
+
+  const { messages, isStreaming, sendMessage } = useChat(activePersonaId, {
+    onAssistantDone: voiceOutput.handleAssistantDone,
+  });
 
   // Modal states
   const [confirmAction, setConfirmAction] = useState<{ type: 'delete' | 'clearHistory'; id: string } | null>(null);
@@ -28,10 +58,7 @@ export default function ChatWindow() {
   // Load active personas from the local database with stats
   const loadPersonas = useCallback(async () => {
     try {
-      const rows = (await window.electronAPI.db.all(
-        `SELECT id, name, settings FROM persona_configs WHERE status = 'active' ORDER BY name ASC`,
-        []
-      )) as Array<{ id: string; name: string; settings: string | null }>;
+      const rows = await window.electronAPI.agent.sidebarList();
 
       const withStats: SidebarPersona[] = await Promise.all(
         rows.map(async (row) => {
@@ -47,16 +74,11 @@ export default function ChatWindow() {
           // Get last message for preview
           let lastMessage: string | undefined;
           try {
-            const lastMsg = (await window.electronAPI.db.get(
-              `SELECT cm.content FROM chat_messages cm
-               JOIN chat_sessions cs ON cm.session_id = cs.id
-               WHERE cs.persona_id = ? ORDER BY cm.created_at DESC LIMIT 1`,
-              [row.id]
-            )) as { content: string } | undefined;
-            lastMessage = lastMsg?.content;
+            const preview = await window.electronAPI.chat.getLastMessage(row.id);
+            lastMessage = preview ?? undefined;
           } catch { /* optional */ }
 
-          let settings: { avatar?: string; pinned?: boolean } = {};
+          let settings: { avatar?: string; pinned?: boolean; avatarStyleId?: string; avatarAccentHue?: number } = {};
           try { if (row.settings) settings = JSON.parse(row.settings); } catch { /* empty */ }
 
           return {
@@ -66,6 +88,8 @@ export default function ChatWindow() {
             unread: false,
             avatar: settings.avatar,
             pinned: settings.pinned,
+            avatarStyleId: settings.avatarStyleId,
+            avatarAccentHue: settings.avatarAccentHue,
             messageCount,
             lastActiveAt,
           };
@@ -143,7 +167,7 @@ export default function ChatWindow() {
       const json = await window.electronAPI.agent.exportPersona(id);
       await navigator.clipboard.writeText(json);
       // Simple visual feedback — could use a toast library later
-      alert('Persona exported to clipboard');
+      toast.success('Persona exported to clipboard');
     } catch (err) {
       console.error('Failed to export persona:', err);
     }
@@ -156,7 +180,7 @@ export default function ChatWindow() {
       setActivePersonaId(result.id);
     } catch (err) {
       console.error('Failed to import persona:', err);
-      alert('Failed to import: ' + (err instanceof Error ? err.message : 'Invalid file'));
+      toast.error('Failed to import: ' + (err instanceof Error ? err.message : 'Invalid file'));
     }
   }
 
@@ -204,15 +228,68 @@ export default function ChatWindow() {
       <div className="flex-1 flex flex-col">
         {activePersona ? (
           <>
-            {/* Header */}
-            <div className="px-4 py-3 border-b border-gray-800 flex items-center">
-              <h2 className="text-sm font-semibold text-white">
+            {/* Header — two-part flex row */}
+            <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
                 {activePersona.avatar && (
-                  <span className="mr-2">{activePersona.avatar}</span>
+                  <span className="text-lg">{activePersona.avatar}</span>
                 )}
-                {activePersona.name}
-              </h2>
+                <h2 className="text-sm font-semibold text-white truncate">
+                  {activePersona.name}
+                </h2>
+                {/* State badge (visible when face is collapsed) */}
+                {faceCollapsed && voiceOutput.isSpeaking && (
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300">
+                    Speaking
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1">
+                {/* Stop Voice button */}
+                {voiceOutput.isSpeaking && (
+                  <button
+                    onClick={voiceOutput.cancel}
+                    className="px-2 py-1 text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded transition-colors"
+                    aria-label="Stop voice"
+                  >
+                    ■ Stop
+                  </button>
+                )}
+                {/* Face collapse toggle */}
+                <button
+                  onClick={() => setFaceCollapsed(!faceCollapsed)}
+                  className="px-2 py-1 text-xs text-gray-400 hover:text-white transition-colors rounded"
+                  aria-label={faceCollapsed ? 'Show avatar' : 'Hide avatar'}
+                >
+                  {faceCollapsed ? '▼' : '▲'}
+                </button>
+              </div>
             </div>
+
+            {/* Avatar face band (collapsible) */}
+            {!faceCollapsed && (
+              <div className="border-b border-gray-800 bg-gray-900/50">
+                <AvatarFace
+                  amplitude={voiceOutput.currentAmplitude}
+                  state={voiceOutput.avatarState}
+                  personaName={activePersona.name}
+                  styleId={(activePersona.avatarStyleId as AvatarStyleId) || undefined}
+                  accentHue={activePersona.avatarAccentHue}
+                  collapsed={faceCollapsed}
+                />
+                {/* Caption strip */}
+                <div
+                  className="h-8 flex items-center justify-center text-sm text-gray-300 truncate px-4"
+                  style={{
+                    opacity: voiceOutput.currentWord ? 1 : 0,
+                    transition: 'opacity 200ms',
+                  }}
+                  aria-live="polite"
+                >
+                  {voiceOutput.currentWord}
+                </div>
+              </div>
+            )}
 
             {/* Messages */}
             <ChatMessages messages={messages} isStreaming={isStreaming} />
@@ -220,7 +297,12 @@ export default function ChatWindow() {
             {/* Input */}
             <ChatInput
               personaName={activePersona.name}
-              onSend={sendMessage}
+              personaId={activePersonaId}
+              isStreaming={isStreaming}
+              onSend={(msg) => {
+                voiceOutput.cancel(); // Interrupt speech on new message
+                sendMessage(msg);
+              }}
               disabled={isStreaming}
             />
           </>
@@ -236,11 +318,16 @@ export default function ChatWindow() {
       </div>
 
       {/* ── Confirmation Modal ── */}
-      {confirmAction && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="bg-gray-900 border border-gray-700 rounded-lg w-[380px] shadow-xl">
+      <Modal
+        isOpen={!!confirmAction}
+        onClose={() => setConfirmAction(null)}
+        labelledBy="confirm-modal-title"
+        className="bg-gray-900 border border-gray-700 rounded-lg w-[380px] shadow-xl"
+      >
+        {confirmAction && (
+          <>
             <div className="px-5 py-4">
-              <h3 className="text-base font-semibold text-white mb-2">
+              <h3 id="confirm-modal-title" className="text-base font-semibold text-white mb-2">
                 {confirmAction.type === 'delete' ? 'Delete Persona' : 'Clear Chat History'}
               </h3>
               <p className="text-sm text-gray-400">
@@ -271,9 +358,9 @@ export default function ChatWindow() {
                 {confirmAction.type === 'delete' ? 'Delete' : 'Clear'}
               </button>
             </div>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </Modal>
 
       {/* ── Settings Panel ── */}
       {editingPersonaId && (

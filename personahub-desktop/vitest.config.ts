@@ -3,7 +3,14 @@ import path from 'node:path';
 
 export default defineConfig({
   test: {
-    include: ['**/__tests__/**/*.test.ts'],
+    include: ['**/__tests__/**/*.test.ts', '**/__tests__/**/*.test.tsx'],
+    environment: 'jsdom',
+    environmentMatchGlobs: [
+      // Main-process tests need Node.js, not jsdom
+      ['electron/**', 'node'],
+      ['openclaw/**', 'node'],
+      ['db/**', 'node'],
+    ],
   },
   resolve: {
     alias: {

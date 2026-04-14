@@ -1,16 +1,27 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron';
+import { app, BrowserWindow, dialog, session, powerMonitor } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-import { initTray } from './tray';
+
+import { initTray, destroyTray } from './tray';
 import { handleAuthCallback, getAuthState, refreshToken, logout, signInWithPassword } from './auth';
 import { getToken, storeToken, clearToken } from './secure-store';
 import { registerShortcuts, unregisterShortcuts } from './shortcuts';
 import { initAutoUpdater, checkForUpdates, installUpdate } from './updater';
+import { handleValidated, setMainWindow } from './ipc-validation';
+import {
+  generateSpeech,
+  transcribeAudio,
+  generatePrompt,
+  disconnect as disconnectGatewayWS,
+} from './openclaw-client';
+import { storeVoiceKey, getVoiceKey, deleteVoiceKey } from './voice-key-store';
+import { getMonthlySummary as getLlmMonthlySummary } from './llm-usage-log';
 
 // Database
 import { initDatabase, closeDatabase, getDatabase } from '../db/init';
@@ -29,35 +40,56 @@ import {
   onResponse,
   onToolCall,
   initAgentBridge,
+  setActionGuard,
+  setPersonaLookup,
 } from '../openclaw/agent-bridge';
-
-// Sync
-import { syncPersonas } from '../sync/platform-sync';
 
 // OpenClaw runtime manager
 import {
   checkInstallation,
-  installRuntime,
   writeConfig,
+  refreshConfigToken,
   startGateway,
   waitForReady,
   stopGateway,
+  cleanupOldRuntime,
 } from './openclaw-manager';
 
-import { generatePrompt } from './openclaw-client';
+// Platform sync
+import { syncPersonas } from '../sync/platform-sync';
+
 import { removeAgentConfig } from '../openclaw/config-factory';
 import { convertDocument } from '../openclaw/document-converter';
-import type { ActionRequest, ConfirmationResponse, ConfirmationLevel, PersonaConfig, PersonaSettings, KnowledgeDocument } from '../src/types';
+import type {
+  ActionRequest,
+  ConfirmationResponse,
+  ConfirmationLevel,
+  PersonaConfig,
+  PersonaSettings,
+  KnowledgeDocument,
+} from '../src/types';
 
-// Single instance lock — only one copy of the app can run
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) {
-  app.quit();
+// Module-level quit flag. Set to true in `before-quit` so the window's
+// `close` handler knows to let the window actually close (instead of just
+// hiding it to the tray).
+let isQuitting = false;
+
+// ─── Single instance lock ──────────────────────────
+// Skipped in dev mode because vite-plugin-electron's rapid restart cycle
+// can leave stale lock state that prevents subsequent launches.
+const isDevMode = !!process.env.VITE_DEV_SERVER_URL;
+if (!isDevMode) {
+  const gotLock = app.requestSingleInstanceLock();
+  if (!gotLock) {
+    app.quit();
+  }
 }
 
 let mainWindow: BrowserWindow | null = null;
 
 const PROTOCOL = 'personahub';
+
+// ─── Window creation ───────────────────────────────
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -74,7 +106,8 @@ function createWindow() {
     },
   });
 
-  // In dev, load from Vite dev server; in prod, load built files
+  setMainWindow(mainWindow);
+
   const devServerUrl = process.env.VITE_DEV_SERVER_URL;
   if (devServerUrl) {
     mainWindow.loadURL(devServerUrl);
@@ -82,21 +115,20 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
-  // Minimize to tray instead of closing (overridden in Phase 8)
+  // Hide instead of closing — app stays alive in the tray.
   mainWindow.on('close', (e) => {
-    if (!(app as typeof app & { isQuitting?: boolean }).isQuitting) {
+    if (!isQuitting) {
       e.preventDefault();
       mainWindow?.hide();
     }
   });
 }
 
-// Register custom protocol for OAuth callback
 function registerProtocol() {
   if (process.defaultApp) {
-    if (process.argv.length >= 2) {
+    if (process.argv.length >= 2 && process.argv[1]) {
       app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [
-        path.resolve(process.argv[1]!),
+        path.resolve(process.argv[1]),
       ]);
     }
   } else {
@@ -104,7 +136,6 @@ function registerProtocol() {
   }
 }
 
-// Handle deep link URLs (personahub://auth/callback?code=xxx)
 function handleDeepLink(url: string) {
   if (url.startsWith(`${PROTOCOL}://auth/callback`)) {
     handleAuthCallback(url).then((result) => {
@@ -113,113 +144,154 @@ function handleDeepLink(url: string) {
   }
 }
 
+// ─── Security wiring (agent bridge + ActionGuard) ──
+
+let securityWired = false;
+function wireSecurityLayer() {
+  if (securityWired) return;
+  setActionGuard(async (req, persona) => evaluateAction(req, persona));
+  setPersonaLookup((personaId) => {
+    try {
+      return getDatabase().getPersonaById(personaId) ?? null;
+    } catch (err) {
+      console.error('[main] personaLookup failed:', err);
+      return null;
+    }
+  });
+  securityWired = true;
+}
+
 // ─── IPC Handlers ──────────────────────────────────
 
 function setupIPC() {
-  // Auth
-  ipcMain.handle('auth:getState', () => getAuthState());
-  ipcMain.handle('auth:signIn', (_e, email: string, password: string) => signInWithPassword(email, password));
-  ipcMain.handle('auth:refresh', () => refreshToken());
-  ipcMain.handle('auth:logout', () => logout());
-  ipcMain.handle('auth:getToken', () => getToken());
-  ipcMain.handle('auth:storeToken', (_e, token: string) => storeToken(token));
-  ipcMain.handle('auth:clearToken', () => clearToken());
+  // ─── Auth ───────────────────────────────────
+  handleValidated('auth:getState', () => getAuthState());
+  handleValidated('auth:signIn', (_e, email: string, password: string) =>
+    signInWithPassword(email, password));
+  handleValidated('auth:refresh', () => refreshToken());
+  handleValidated('auth:logout', () => logout());
+  handleValidated('auth:getToken', () => getToken());
+  handleValidated('auth:storeToken', (_e, token: string) => storeToken(token));
+  handleValidated('auth:clearToken', () => clearToken());
 
-  // Window control
-  ipcMain.handle('window:show', () => mainWindow?.show());
-  ipcMain.handle('window:hide', () => mainWindow?.hide());
-  ipcMain.handle('window:isVisible', () => mainWindow?.isVisible());
+  // ─── Window ─────────────────────────────────
+  handleValidated('window:show', () => mainWindow?.show());
+  handleValidated('window:hide', () => mainWindow?.hide());
+  handleValidated('window:isVisible', () => mainWindow?.isVisible());
 
-  // App info
-  ipcMain.handle('app:getPath', (_e, name: string) =>
-    app.getPath(name as Parameters<typeof app.getPath>[0])
-  );
-  ipcMain.handle('app:getVersion', () => app.getVersion());
+  // ─── App info ───────────────────────────────
+  handleValidated('app:getPath', (_e, name: string) => {
+    // Only allow paths the renderer legitimately needs — prevents snooping
+    // around the filesystem via IPC.
+    const ALLOWED = new Set(['userData']);
+    if (!ALLOWED.has(name)) throw new Error(`Disallowed path: ${name}`);
+    return app.getPath(name as Parameters<typeof app.getPath>[0]);
+  });
+  handleValidated('app:getVersion', () => app.getVersion());
 
-  // Auto-updater
-  ipcMain.handle('updater:check', () => checkForUpdates());
-  ipcMain.handle('updater:install', () => installUpdate());
+  // ─── Auto-updater ───────────────────────────
+  handleValidated('updater:check', () => checkForUpdates());
+  handleValidated('updater:install', () => installUpdate());
 
-  // ─── Security ─────────────────────────────────
-  ipcMain.handle('security:evaluate', (_e, request: ActionRequest) => {
+  // ─── Security ───────────────────────────────
+  // Remember the original request so security:confirm can save the right
+  // permission record after user approval.
+  const pendingRequests = new Map<string, { personaId: string; tool: string; target?: string }>();
+
+  handleValidated('security:evaluate', (_e, request: ActionRequest & { requestId?: string }) => {
     const persona = getDatabase().getPersonaById(request.personaId);
     if (!persona) throw new Error(`Persona ${request.personaId} not found`);
+    if (request.requestId) {
+      pendingRequests.set(request.requestId, {
+        personaId: request.personaId,
+        tool: request.tool,
+        target: request.target,
+      });
+    }
     return evaluateAction(request, persona);
   });
 
-  ipcMain.handle('security:confirm', (_e, requestId: string, response: ConfirmationResponse) => {
+  handleValidated('security:confirm', (_e, requestId: string, response: ConfirmationResponse) => {
+    const orig = pendingRequests.get(requestId);
+    if (!orig) {
+      console.warn('[security:confirm] Unknown requestId:', requestId);
+      return;
+    }
     if (response.decision === 'allow_always' && 'pathPattern' in response) {
       savePermission({
-        personaId: requestId,
-        tool: '',
+        personaId: orig.personaId,
+        tool: orig.tool,
         pathPattern: response.pathPattern,
         permission: 'allow_always',
       });
     } else if (response.decision === 'block') {
       savePermission({
-        personaId: requestId,
-        tool: '',
-        pathPattern: '',
+        personaId: orig.personaId,
+        tool: orig.tool,
+        pathPattern: orig.target ?? '',
         permission: 'block_always',
       });
     }
+    pendingRequests.delete(requestId);
   });
 
-  // ─── Agent ────────────────────────────────────
-  ipcMain.handle('agent:send', async (_e, personaId: string, message: string) => {
+  // ─── Agent ──────────────────────────────────
+  handleValidated('agent:send', async (_e, personaId: string, message: string) => {
     const persona = getDatabase().getPersonaById(personaId);
     if (!persona) throw new Error(`Persona ${personaId} not found`);
     await startAgent(persona);
     await agentSendMessage(personaId, message, persona);
   });
 
-  ipcMain.handle('agent:stop', (_e, personaId: string) => {
+  handleValidated('agent:stop', (_e, personaId: string) => {
     return stopAgent(personaId);
   });
 
-  // ─── Persona Creation (AI-powered) ────────────
-  ipcMain.handle('persona:create', async (
+  // ─── Persona Creation (AI-powered) ──────────
+  handleValidated('persona:create', async (
     _e,
     name: string,
     description: string,
-    options?: { temperature?: number; confirmationLevel?: ConfirmationLevel }
+    options?: { temperature?: number; confirmationLevel?: ConfirmationLevel; modelName?: string }
   ) => {
-    // 1. Ask the AI to generate a rich system prompt from the name + description
     const systemPrompt = await generatePrompt(name, description);
 
-    // 2. Insert persona into SQLite
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     const confirmationLevel = options?.confirmationLevel ?? 'balanced';
-
     const db = getDatabase();
     const defaultTools = JSON.stringify(['read', 'ls', 'web_search', 'web_fetch']);
     const defaultPaths = JSON.stringify([{ path: '~/', mode: 'read' }]);
 
-    db.db.prepare(
-      `INSERT INTO persona_configs (id, name, system_prompt, status, confirmation_level, enabled_tools, allowed_paths, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(id, name, systemPrompt, 'active', confirmationLevel, defaultTools, defaultPaths, now, now);
+    // Seed settings from create options so new personas inherit the global
+    // default-model preference set in Settings.
+    const settingsBlob: Record<string, unknown> = {};
+    if (options?.temperature !== undefined) settingsBlob.temperature = options.temperature;
+    if (options?.modelName) settingsBlob.modelName = options.modelName;
+    const settingsJson = JSON.stringify(settingsBlob);
 
-    // 3. Start the agent (writes SOUL.md + registers with OpenClaw)
+    db.db.prepare(
+      `INSERT INTO persona_configs (id, name, system_prompt, status, confirmation_level, enabled_tools, allowed_paths, settings, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, name, systemPrompt, 'active', confirmationLevel, defaultTools, defaultPaths, settingsJson, now, now);
+
     const persona = db.getPersonaById(id);
     if (persona) {
       await startAgent(persona);
     }
-
     return { id, name, systemPrompt };
   });
 
   // ─── Persona Management ─────────────────────
-  ipcMain.handle('persona:list', () => {
+  handleValidated('persona:list', () => {
     return getDatabase().getActivePersonas();
   });
 
-  ipcMain.handle('persona:get', (_e, id: string) => {
+  handleValidated('persona:get', (_e, id: string) => {
     return getDatabase().getPersonaById(id) ?? null;
   });
 
-  ipcMain.handle('persona:update', async (
+  handleValidated('persona:update', async (
     _e,
     id: string,
     updates: Partial<Pick<PersonaConfig, 'name' | 'systemPrompt' | 'confirmationLevel' | 'enabledTools' | 'allowedPaths'> & { settings: Partial<PersonaSettings> }>
@@ -228,7 +300,6 @@ function setupIPC() {
     const persona = db.getPersonaById(id);
     if (!persona) throw new Error(`Persona ${id} not found`);
 
-    // Merge updates
     if (updates.name !== undefined) persona.name = updates.name;
     if (updates.systemPrompt !== undefined) persona.systemPrompt = updates.systemPrompt;
     if (updates.confirmationLevel !== undefined) persona.confirmationLevel = updates.confirmationLevel;
@@ -247,24 +318,28 @@ function setupIPC() {
     return persona;
   });
 
-  ipcMain.handle('persona:delete', async (_e, id: string) => {
+  handleValidated('persona:delete', async (_e, id: string) => {
     const db = getDatabase();
     const persona = db.getPersonaById(id);
     if (!persona) throw new Error(`Persona ${id} not found`);
 
-    // Stop agent + remove config files
     await stopAgent(id);
     removeAgentConfig(id);
 
-    // Delete chat history
-    db.db.prepare(`DELETE FROM chat_messages WHERE session_id IN (SELECT id FROM chat_sessions WHERE persona_id = ?)`).run(id);
-    db.db.prepare(`DELETE FROM chat_sessions WHERE persona_id = ?`).run(id);
-
-    // Delete persona
-    db.deletePersona(id);
+    db.db.transaction(() => {
+      db.db.prepare('DELETE FROM knowledge_documents WHERE persona_id = ?').run(id);
+      db.db.prepare('DELETE FROM permission_memory WHERE persona_id = ?').run(id);
+      db.db.prepare(`DELETE FROM backup_records WHERE action_log_id IN
+        (SELECT id FROM action_log_entries WHERE persona_id = ?)`).run(id);
+      db.db.prepare('DELETE FROM action_log_entries WHERE persona_id = ?').run(id);
+      db.db.prepare(`DELETE FROM chat_messages WHERE session_id IN
+        (SELECT id FROM chat_sessions WHERE persona_id = ?)`).run(id);
+      db.db.prepare('DELETE FROM chat_sessions WHERE persona_id = ?').run(id);
+      db.db.prepare('DELETE FROM persona_configs WHERE id = ?').run(id);
+    })();
   });
 
-  ipcMain.handle('persona:duplicate', async (_e, id: string) => {
+  handleValidated('persona:duplicate', async (_e, id: string) => {
     const db = getDatabase();
     const original = db.getPersonaById(id);
     if (!original) throw new Error(`Persona ${id} not found`);
@@ -281,11 +356,10 @@ function setupIPC() {
 
     db.upsertPersona(clone);
     await startAgent(clone);
-
     return { id: newId, name: clone.name };
   });
 
-  ipcMain.handle('persona:regeneratePrompt', async (_e, id: string) => {
+  handleValidated('persona:regeneratePrompt', async (_e, id: string) => {
     const db = getDatabase();
     const persona = db.getPersonaById(id);
     if (!persona) throw new Error(`Persona ${id} not found`);
@@ -295,22 +369,22 @@ function setupIPC() {
     persona.updatedAt = new Date().toISOString();
     db.upsertPersona(persona);
     await startAgent(persona);
-
     return { systemPrompt };
   });
 
-  ipcMain.handle('persona:clearHistory', (_e, personaId: string) => {
+  handleValidated('persona:clearHistory', (_e, personaId: string) => {
     const db = getDatabase();
-    db.db.prepare(`DELETE FROM chat_messages WHERE session_id IN (SELECT id FROM chat_sessions WHERE persona_id = ?)`).run(personaId);
-    db.db.prepare(`DELETE FROM chat_sessions WHERE persona_id = ?`).run(personaId);
+    db.db.transaction(() => {
+      db.db.prepare('DELETE FROM chat_messages WHERE session_id IN (SELECT id FROM chat_sessions WHERE persona_id = ?)').run(personaId);
+      db.db.prepare('DELETE FROM chat_sessions WHERE persona_id = ?').run(personaId);
+    })();
   });
 
-  ipcMain.handle('persona:export', (_e, id: string) => {
+  handleValidated('persona:export', (_e, id: string) => {
     const db = getDatabase();
     const persona = db.getPersonaById(id);
     if (!persona) throw new Error(`Persona ${id} not found`);
 
-    // Export only the essential fields (no internal IDs)
     const exportData = {
       name: persona.name,
       systemPrompt: persona.systemPrompt,
@@ -323,88 +397,120 @@ function setupIPC() {
     return JSON.stringify(exportData, null, 2);
   });
 
-  ipcMain.handle('persona:import', async (_e, json: string) => {
-    const data = JSON.parse(json);
-    if (!data.name || !data.systemPrompt) throw new Error('Invalid persona data');
+  handleValidated('persona:import', async (_e, json: string) => {
+    // Never blindly trust a JSON file — sanitize name, whitelist tools,
+    // and force conservative defaults. User can broaden later via UI.
+    const SAFE_TOOL_WHITELIST = new Set([
+      'read',
+      'ls',
+      'web_search',
+      'web_fetch',
+      'memory_search',
+      'calendar.read',
+      'weather',
+    ]);
+
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(json);
+    } catch {
+      throw new Error('Invalid JSON');
+    }
+
+    if (typeof data.name !== 'string' || typeof data.systemPrompt !== 'string') {
+      throw new Error('Invalid persona data: missing name or systemPrompt');
+    }
+
+    const cleanName = (data.name as string)
+      .replace(/[\r\n\t]/g, ' ')
+      .replace(/[^\w\s\-'.()]/g, '')
+      .trim()
+      .slice(0, 80);
+    if (!cleanName) throw new Error('Persona name is empty after sanitization');
+
+    const rawTools = Array.isArray(data.enabledTools) ? data.enabledTools : [];
+    const safeTools = rawTools.filter(
+      (t: unknown): t is string => typeof t === 'string' && SAFE_TOOL_WHITELIST.has(t),
+    );
+    const safeAllowedPaths = [{ path: '~/', mode: 'read' as const }];
+
+    const validLevels = new Set(['paranoid', 'balanced', 'relaxed', 'trust']);
+    const cl: ConfirmationLevel =
+      typeof data.confirmationLevel === 'string' && validLevels.has(data.confirmationLevel)
+        ? (data.confirmationLevel as ConfirmationLevel)
+        : 'paranoid';
 
     const db = getDatabase();
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-
     const persona: PersonaConfig = {
       id,
       userId: '',
-      name: data.name,
-      systemPrompt: data.systemPrompt,
+      name: cleanName,
+      systemPrompt: data.systemPrompt as string,
       chatflowId: '',
       apiEndpoint: '',
       status: 'active',
-      enabledTools: data.enabledTools ?? [],
-      allowedPaths: data.allowedPaths ?? [],
-      blockedPaths: data.blockedPaths ?? [],
-      confirmationLevel: data.confirmationLevel ?? 'balanced',
+      enabledTools: safeTools,
+      allowedPaths: safeAllowedPaths,
+      blockedPaths: [],
+      confirmationLevel: cl,
       dangerousToolsEnabled: false,
       activityLogging: true,
       undoEnabled: true,
       sandboxEnabled: false,
       knowledgeBaseRefs: [],
-      settings: data.settings ?? {},
+      settings: (data.settings as PersonaSettings) ?? {},
       syncedAt: now,
       createdAt: now,
       updatedAt: now,
     };
-
     db.upsertPersona(persona);
     await startAgent(persona);
-
     return { id, name: persona.name };
   });
 
-  ipcMain.handle('persona:stats', (_e, personaId: string) => {
+  handleValidated('persona:stats', (_e, personaId: string) => {
     const db = getDatabase();
     const row = db.db.prepare(`
       SELECT COUNT(*) as count, MAX(cm.created_at) as last_active
       FROM chat_messages cm
       JOIN chat_sessions cs ON cm.session_id = cs.id
       WHERE cs.persona_id = ?
-    `).get(personaId) as { count: number; last_active: string | null } | undefined;
-
+    `).get(personaId) as { count?: number; last_active?: string } | undefined;
     return {
       messageCount: row?.count ?? 0,
       lastActiveAt: row?.last_active ?? null,
     };
   });
 
-  // ─── Knowledge Base ─────────────────────────────
-  ipcMain.handle('kb:upload', async (_e, personaId: string) => {
-    // Open native file picker (sandbox blocks file.path in renderer)
+  // ─── Knowledge base ─────────────────────────
+  handleValidated('kb:upload', async (_e, personaId: string): Promise<KnowledgeDocument | null> => {
     const result = await dialog.showOpenDialog({
       title: 'Upload Knowledge Document',
       filters: [{ name: 'Documents', extensions: ['pdf', 'docx', 'txt', 'md'] }],
       properties: ['openFile'],
     });
     if (result.canceled || result.filePaths.length === 0) return null;
-    const filePath = result.filePaths[0]!;
 
+    const filePath = result.filePaths[0];
+    if (!filePath) return null;
     const db = getDatabase();
     const persona = db.getPersonaById(personaId);
     if (!persona) throw new Error(`Persona ${personaId} not found`);
 
-    // Convert the file to plain text
     const { text, title } = await convertDocument(filePath);
 
-    // Write as .md into the agent's knowledge folder
+    // Write the markdown into the persona's knowledge folder (OpenClaw reads
+    // these .md files automatically at chat time).
     const knowledgeDir = path.join(os.homedir(), '.openclaw', 'agents', personaId, 'knowledge');
     fs.mkdirSync(knowledgeDir, { recursive: true });
     const mdFileName = `${title}.md`;
     const mdPath = path.join(knowledgeDir, mdFileName);
     fs.writeFileSync(mdPath, text, 'utf-8');
 
-    // Get original file info
     const stat = fs.statSync(filePath);
     const ext = path.extname(filePath).toLowerCase().replace('.', '') as KnowledgeDocument['fileType'];
-
-    // Insert DB record
     const doc: KnowledgeDocument = {
       id: crypto.randomUUID(),
       personaId,
@@ -416,15 +522,14 @@ function setupIPC() {
       createdAt: new Date().toISOString(),
     };
     db.insertKnowledgeDoc(doc);
-
     return doc;
   });
 
-  ipcMain.handle('kb:list', (_e, personaId: string) => {
+  handleValidated('kb:list', (_e, personaId: string) => {
     return getDatabase().getKnowledgeDocs(personaId);
   });
 
-  ipcMain.handle('kb:delete', (_e, docId: string) => {
+  handleValidated('kb:delete', (_e, docId: string) => {
     const db = getDatabase();
     const doc = db.deleteKnowledgeDoc(docId);
     if (doc && fs.existsSync(doc.workspacePath)) {
@@ -432,98 +537,285 @@ function setupIPC() {
     }
   });
 
-  // ─── Sync ─────────────────────────────────────
-  ipcMain.handle('sync:now', async () => {
+  // ─── Sync ───────────────────────────────────
+  handleValidated('sync:now', async () => {
     const token = await getToken();
     if (!token) throw new Error('Not authenticated');
     return syncPersonas(token);
   });
 
-  // ─── Backup ───────────────────────────────────
-  ipcMain.handle('backup:undo', (_e, backupId: string) => {
-    return undo(backupId);
+  // ─── Backup ─────────────────────────────────
+  handleValidated('backup:undo', (_e, backupId: string) => {
+    const db = getDatabase();
+    const record = db.getBackupById(backupId);
+    const result = undo(backupId);
+    if (result.success && record?.actionLogId) {
+      db.updateActionLogResult(record.actionLogId, 'undone');
+    }
+    return result;
   });
 
-  ipcMain.handle('backup:history', (_e, personaId?: string) => {
+  handleValidated('backup:history', (_e, personaId?: string) => {
     if (personaId) {
       return getDatabase().getActionLogsByPersona(personaId);
     }
     return getDatabase().getAllActionLogs();
   });
 
-  // ─── OpenClaw ─────────────────────────────────
-  ipcMain.handle('openclaw:checkInstalled', async () => {
+  // ─── OpenClaw setup ─────────────────────────
+  handleValidated('openclaw:checkInstalled', async () => {
     const result = await checkInstallation();
-    console.log('[IPC] openclaw:checkInstalled =>', result);
     return result;
   });
 
-  ipcMain.handle('openclaw:install', async (_e, apiKey: string, provider: string) => {
-    // Install runtime with progress forwarded to renderer
-    await installRuntime((pct) => {
-      mainWindow?.webContents.send('openclaw:progress', pct);
-    });
-
-    // Write config with the user's API key
-    writeConfig(apiKey, provider as 'anthropic' | 'google');
-
-    // Start the gateway
+  handleValidated('openclaw:install', async (_e, apiKey: string, provider: string) => {
+    if (provider !== 'anthropic' && provider !== 'google') {
+      throw new Error('Invalid provider: must be anthropic or google');
+    }
+    writeConfig(apiKey, provider);
     await startGateway();
     const ready = await waitForReady();
     if (!ready) throw new Error('Gateway failed to start within 30 seconds');
-
-    // Initialize the agent bridge WebSocket connection
+    wireSecurityLayer();
     initAgentBridge();
+  });
+
+  // ─── TTS / STT ──────────────────────────────
+  // Simple rate-limiter: one TTS synthesis per 500ms. Without this a stuck
+  // renderer loop could burn through cloud TTS credits fast.
+  let lastTtsCall = 0;
+
+  handleValidated('tts:synthesize', async (_event, text: string, voiceId: string, provider: string, personaId: string) => {
+    const now = Date.now();
+    if (now - lastTtsCall < 500) throw new Error('Rate limited — please wait');
+    lastTtsCall = now;
+
+    if (!text || typeof text !== 'string') throw new Error('Text is required');
+    if (text.trim().length === 0) throw new Error('Text cannot be empty');
+    if (text.length > 2000) throw new Error('Text exceeds 2000 character limit');
+    if (!voiceId || !provider || !personaId) throw new Error('Missing required parameters');
+
+    return generateSpeech(text, voiceId, provider);
+  });
+
+  handleValidated('stt:transcribe', async (_event, audioData: ArrayBuffer | Buffer, mimeType: string) => {
+    if (!audioData || !(audioData instanceof ArrayBuffer || Buffer.isBuffer(audioData))) {
+      throw new Error('Audio data is required');
+    }
+    const buf = Buffer.isBuffer(audioData) ? audioData : Buffer.from(audioData);
+    if (buf.length === 0) throw new Error('Audio data is empty');
+    if (buf.length > 25 * 1024 * 1024) throw new Error('Audio exceeds 25MB limit');
+    const mime = typeof mimeType === 'string' ? mimeType : 'audio/webm';
+    const text = await transcribeAudio(buf, mime);
+    return { text };
+  });
+
+  // ─── Voice key storage ──────────────────────
+  handleValidated('voice:storeKey', async (_event, providerId: string, apiKey: string) => {
+    return storeVoiceKey(providerId, apiKey);
+  });
+
+  handleValidated('voice:getKey', async (_event, providerId: string) => {
+    return getVoiceKey(providerId);
+  });
+
+  // Audit finding P5-B-3: renderer only needs existence check, not the key.
+  handleValidated('voice:hasKey', async (_event, providerId: string) => {
+    return !!(await getVoiceKey(providerId));
+  });
+
+  handleValidated('voice:deleteKey', async (_event, providerId: string) => {
+    return deleteVoiceKey(providerId);
+  });
+
+  // ─── Voice preferences ──────────────────────
+  handleValidated('voice:getPrefs', async () => {
+    const prefsPath = path.join(app.getPath('userData'), 'voice-prefs.json');
+    try {
+      if (fs.existsSync(prefsPath)) {
+        return JSON.parse(fs.readFileSync(prefsPath, 'utf-8'));
+      }
+    } catch (err) {
+      console.warn('[voice:getPrefs] Failed to read preferences:', err);
+    }
+    return {
+      voiceOutputEnabled: true,
+      voiceInputEnabled: false,
+      defaultProvider: 'os-native',
+      captionsEnabled: true,
+      defaultAvatarStyle: 'face-warm',
+      reducedMotionOverride: 'auto',
+      localOnlyMode: false,
+      autoStopOnBlur: true,
+      monthlySpendCeiling: {},
+      featureFlag: true,
+      defaultSpeed: 1,
+    };
+  });
+
+  handleValidated('voice:setPrefs', async (_event, prefs: Record<string, unknown>) => {
+    const prefsPath = path.join(app.getPath('userData'), 'voice-prefs.json');
+    let existing: Record<string, unknown> = {};
+    try {
+      if (fs.existsSync(prefsPath)) {
+        existing = JSON.parse(fs.readFileSync(prefsPath, 'utf-8'));
+      }
+    } catch (err) {
+      console.warn('[voice:setPrefs] Failed to read existing preferences:', err);
+    }
+    const merged = { ...existing, ...prefs };
+    fs.writeFileSync(prefsPath, JSON.stringify(merged, null, 2), 'utf-8');
+  });
+
+  // ─── LLM usage (for the Settings → AI cost dashboard) ──
+  handleValidated('llm:getUsage', async () => {
+    return getLlmMonthlySummary();
+  });
+
+  // ─── Voice diagnostics ──────────────────────
+  handleValidated('voice:diagnostics', async () => {
+    const results: Array<{ stage: string; status: string; errorCode?: string; errorMessage?: string }> = [];
+
+    // Check secure store
+    try {
+      const { safeStorage } = await import('electron');
+      results.push({
+        stage: 'secure-store',
+        status: safeStorage.isEncryptionAvailable() ? 'pass' : 'fail',
+        errorCode: safeStorage.isEncryptionAvailable() ? undefined : 'ENCRYPTION_UNAVAILABLE',
+      });
+    } catch {
+      results.push({ stage: 'secure-store', status: 'fail', errorCode: 'CHECK_FAILED' });
+    }
+
+    // Check gateway
+    try {
+      const { getState } = await import('./openclaw-manager');
+      const state = getState();
+      results.push({ stage: 'gateway', status: state.running ? 'pass' : 'fail' });
+    } catch {
+      results.push({ stage: 'gateway', status: 'fail', errorCode: 'GATEWAY_UNREACHABLE' });
+    }
+
+    // OS voices are only checkable in the renderer (via speechSynthesis API)
+    results.push({ stage: 'os-voices', status: 'skip', errorMessage: 'Checked in renderer' });
+
+    return results;
   });
 }
 
-// ─── App Lifecycle ──────────────────────────────────
+// ─── App lifecycle ─────────────────────────────────
 
 app.whenReady().then(async () => {
-  // Initialize database first — everything else depends on it
-  initDatabase(app.getPath('userData'));
+  try {
+    initDatabase(app.getPath('userData'));
+  } catch (err) {
+    console.error('[main] initDatabase failed:', err);
+    const { dialog } = await import('electron');
+    dialog.showErrorBox(
+      'Database initialization failed',
+      `PersonaHub could not open its local database. Please try restarting the app.\n\n${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    app.exit(1);
+    return;
+  }
 
-  // Backfill: give existing personas default tools if they have none
+  // Clean up any leftover OpenClaw runtime files from previous installs.
+  cleanupOldRuntime();
+
+  // Backfill: some early personas were created with null enabled_tools —
+  // restore sensible defaults so chat tools work out of the box.
   {
     const db = getDatabase();
     const defaultTools = JSON.stringify(['read', 'ls', 'web_search', 'web_fetch']);
     const defaultPaths = JSON.stringify([{ path: '~/', mode: 'read' }]);
     db.db.prepare(
-      `UPDATE persona_configs SET enabled_tools = ?, allowed_paths = ? WHERE enabled_tools IS NULL OR enabled_tools = '[]'`
+      "UPDATE persona_configs SET enabled_tools = ?, allowed_paths = ? WHERE enabled_tools IS NULL OR enabled_tools = '[]'",
     ).run(defaultTools, defaultPaths);
   }
 
   registerProtocol();
   setupIPC();
 
-  // Auto-start gateway if OpenClaw is already installed and configured
+  // Try to start the local OpenClaw gateway if it's already installed.
   const installed = await checkInstallation();
   console.log('[main] checkInstallation:', installed);
   if (installed) {
     try {
+      refreshConfigToken();
       await startGateway();
       const ready = await waitForReady();
       console.log('[main] gateway ready:', ready);
-      if (ready) initAgentBridge();
+      if (ready) {
+        wireSecurityLayer();
+        initAgentBridge();
+      }
     } catch (err) {
       console.error('[main] Failed to auto-start gateway:', err);
     }
   }
 
   createWindow();
-  initTray(mainWindow!);
-  registerShortcuts(mainWindow!);
-  initAutoUpdater(mainWindow!);
 
-  // Forward agent events to the renderer process
+  // Allow the renderer to use the microphone (for Web Speech API STT)
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    if (permission === 'media' && webContents === mainWindow?.webContents) {
+      callback(true);
+    } else {
+      callback(false);
+    }
+  });
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
+    return permission === 'media';
+  });
+
+  // CSP — tighter in prod, dev needs the Vite server + gateway.
+  const isDev = !!process.env.VITE_DEV_SERVER_URL;
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    const csp = isDev
+      ? "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://localhost:* http://localhost:* http://127.0.0.1:18789 ws://127.0.0.1:18789; img-src 'self' data:; media-src 'self' blob:; worker-src 'self' blob:;"
+      : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:18789 ws://127.0.0.1:18789; img-src 'self' data:; media-src 'self' blob:; worker-src 'self' blob:;";
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [csp],
+      },
+    });
+  });
+
+  // Block renderer from opening popups or navigating away from the SPA.
+  mainWindow?.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow?.webContents.on('will-navigate', (event, url) => {
+    const devUrl = process.env.VITE_DEV_SERVER_URL;
+    if (devUrl && url.startsWith(devUrl)) return;
+    if (url.startsWith('file://')) return;
+    event.preventDefault();
+  });
+
+  // Bridge power-monitor events to DOM events so useVoiceInput can auto-stop
+  // the mic when the user locks their screen or the machine suspends.
+  powerMonitor.on('lock-screen', () => {
+    mainWindow?.webContents.send('power:lock');
+  });
+  powerMonitor.on('suspend', () => {
+    mainWindow?.webContents.send('power:suspend');
+  });
+
+  if (mainWindow) {
+    initTray(mainWindow);
+    registerShortcuts(mainWindow);
+    initAutoUpdater(mainWindow);
+  }
+
+  // Forward streamed agent responses + tool calls to the renderer.
   onResponse((chunk) => mainWindow?.webContents.send('agent:response', chunk));
   onToolCall((toolCall) => mainWindow?.webContents.send('agent:toolCall', toolCall));
 
-  // Start on login — defaults to true, user can toggle in Settings
   app.setLoginItemSettings({ openAtLogin: true });
 });
 
-// macOS: re-create window when dock icon clicked
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow();
@@ -532,28 +824,45 @@ app.on('activate', () => {
   }
 });
 
-// Handle deep links on macOS
 app.on('open-url', (_event, url) => {
   handleDeepLink(url);
 });
 
-// Handle deep links on Windows/Linux (second instance)
 app.on('second-instance', (_event, commandLine) => {
   const url = commandLine.find((arg) => arg.startsWith(`${PROTOCOL}://`));
   if (url) handleDeepLink(url);
   mainWindow?.show();
 });
 
-app.on('before-quit', async () => {
-  (app as typeof app & { isQuitting: boolean }).isQuitting = true;
-  unregisterShortcuts();
+// Graceful shutdown — stop gateway, save DB, etc. Guard against re-entry so
+// we don't deadlock during double-quit signals.
+let cleanupInProgress = false;
+app.on('before-quit', (event) => {
+  isQuitting = true;
+  if (cleanupInProgress) return;
+  cleanupInProgress = true;
+  event.preventDefault();
+  (async () => {
+    try {
+      unregisterShortcuts();
+      destroyTray();
+      disconnectGatewayWS();
+      await stopAllAgents();
+      stopGateway();
+      closeDatabase();
+    } catch (err) {
+      console.error('[main] Error during shutdown cleanup:', err);
+    } finally {
+      app.quit();
+    }
+  })();
+});
 
-  // Stop all running agents and the gateway
-  await stopAllAgents();
-  stopGateway();
-
-  // Close the database connection
-  closeDatabase();
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught exception:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL] Unhandled promise rejection:', reason);
 });
 
 app.on('window-all-closed', () => {

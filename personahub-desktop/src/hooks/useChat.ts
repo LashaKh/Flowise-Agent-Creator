@@ -1,11 +1,23 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { ChatMessage } from '../types';
 
-export function useChat(personaId: string | null) {
+export interface UseChatOptions {
+  onAssistantDone?: (content: string, personaId: string) => void;
+}
+
+export function useChat(personaId: string | null, options?: UseChatOptions) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const assistantBufferRef = useRef('');
   const assistantMsgIdRef = useRef('');
+
+  // Store onAssistantDone in a ref so the streaming effect below doesn't
+  // capture a stale version when the parent re-renders with a new callback
+  // (audit finding P3-D-1).
+  const onAssistantDoneRef = useRef(options?.onAssistantDone);
+  useEffect(() => {
+    onAssistantDoneRef.current = options?.onAssistantDone;
+  });
 
   // Load messages from DB when persona changes
   useEffect(() => {
@@ -18,34 +30,9 @@ export function useChat(personaId: string | null) {
 
     async function loadMessages() {
       try {
-        // Get or create a session for this persona
         const session = await getOrCreateSession(personaId!);
-
-        // Load existing messages
-        const rows = (await window.electronAPI.db.all(
-          'SELECT id, session_id, role, content, error, created_at FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC',
-          [session.sessionId]
-        )) as Array<{
-          id: string;
-          session_id: string;
-          role: 'user' | 'assistant';
-          content: string;
-          error: string | null;
-          created_at: string;
-        }>;
-
-        if (!cancelled) {
-          setMessages(
-            rows.map((r) => ({
-              id: r.id,
-              sessionId: r.session_id,
-              role: r.role,
-              content: r.content,
-              error: r.error ?? undefined,
-              createdAt: r.created_at,
-            }))
-          );
-        }
+        const rows = await window.electronAPI.chat.loadMessages(session.sessionId);
+        if (!cancelled) setMessages(rows);
       } catch (err) {
         console.error('Failed to load messages:', err);
       }
@@ -63,9 +50,14 @@ export function useChat(personaId: string | null) {
       if (chunk.personaId !== personaId) return;
 
       if (chunk.done) {
-        // Streaming finished -- save the complete assistant message to DB
+        // Streaming finished -- save the complete assistant message to DB.
+        // Guard against the double-done bug (audit finding P2-1): if the
+        // buffer and id are both already empty, a previous `done` already
+        // processed this stream and we're just the trailing `end` event.
         const finalContent = assistantBufferRef.current;
         const msgId = assistantMsgIdRef.current;
+        if (!msgId) return;
+
         setMessages((prev) =>
           prev.map((m) =>
             m.id === msgId ? { ...m, content: finalContent, isStreaming: false } : m
@@ -73,13 +65,23 @@ export function useChat(personaId: string | null) {
         );
         setIsStreaming(false);
 
-        // Persist to DB
-        getOrCreateSession(personaId!).then((session) => {
-          window.electronAPI.db.run(
-            'INSERT INTO chat_messages (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)',
-            [msgId, session.sessionId, 'assistant', finalContent, new Date().toISOString()]
-          );
-        });
+        // Persist to DB via the typed chat API with error logging
+        // (audit findings P1-2, P4-B-2).
+        getOrCreateSession(personaId!)
+          .then((session) =>
+            window.electronAPI.chat.saveMessage({
+              id: msgId,
+              sessionId: session.sessionId,
+              role: 'assistant',
+              content: finalContent,
+            })
+          )
+          .catch((err) => console.error('[useChat] Failed to persist assistant message:', err));
+
+        // Notify voice output that a reply is ready (via ref — not stale)
+        if (finalContent && personaId) {
+          onAssistantDoneRef.current?.(finalContent, personaId);
+        }
 
         assistantBufferRef.current = '';
         assistantMsgIdRef.current = '';
@@ -96,7 +98,7 @@ export function useChat(personaId: string | null) {
       }
     });
 
-    return cleanup as unknown as () => void;
+    return cleanup;
   }, [personaId]);
 
   const sendMessage = useCallback(
@@ -116,11 +118,13 @@ export function useChat(personaId: string | null) {
         createdAt: now,
       };
 
-      // Save user message to DB
-      await window.electronAPI.db.run(
-        'INSERT INTO chat_messages (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)',
-        [userMsgId, session.sessionId, 'user', message, now]
-      );
+      // Save user message to DB via typed chat API
+      await window.electronAPI.chat.saveMessage({
+        id: userMsgId,
+        sessionId: session.sessionId,
+        role: 'user',
+        content: message,
+      });
 
       // Create placeholder assistant message for streaming
       const assistantMsgId = crypto.randomUUID();
@@ -168,31 +172,21 @@ export function clearSessionCache(personaId: string) {
   sessionCache.delete(personaId);
 }
 
+/**
+ * Clear the entire session cache. Call this on sign-out or other lifecycle
+ * events where stale session mappings could leak across users.
+ * Audit finding P4-E-4.
+ */
+export function clearAllSessionCache() {
+  sessionCache.clear();
+}
+
 async function getOrCreateSession(personaId: string): Promise<{ sessionId: string }> {
   const cached = sessionCache.get(personaId);
   if (cached) return cached;
 
-  const existing = (await window.electronAPI.db.get(
-    'SELECT id, session_id FROM chat_sessions WHERE persona_id = ? ORDER BY created_at DESC LIMIT 1',
-    [personaId]
-  )) as { id: string; session_id: string } | undefined;
-
-  if (existing) {
-    const result = { sessionId: existing.id };
-    sessionCache.set(personaId, result);
-    return result;
-  }
-
-  // Create a new session — use same UUID for id and session_id
-  const id = crypto.randomUUID();
-  const now = new Date().toISOString();
-
-  await window.electronAPI.db.run(
-    'INSERT INTO chat_sessions (id, persona_id, session_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
-    [id, personaId, id, now, now]
-  );
-
-  const result = { sessionId: id };
+  // The typed IPC handler returns or creates a session atomically.
+  const result = await window.electronAPI.chat.getOrCreateSession(personaId);
   sessionCache.set(personaId, result);
   return result;
 }

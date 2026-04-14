@@ -162,6 +162,43 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    // ─── Authentication ──────────────────────────
+    // Audit finding P2-5: previously this endpoint had ZERO auth and anyone
+    // could burn Gemini credits by hitting it. Accept either:
+    //   1. The service role key (called from the `personas` function)
+    //   2. A valid user JWT from a signed-in client
+    const authHeader = req.headers.get('Authorization') ?? '';
+    const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+
+    let authorized = false;
+    if (bearer && serviceRoleKey && bearer === serviceRoleKey) {
+      authorized = true;
+    } else if (bearer) {
+      // Validate as a user JWT via Supabase auth
+      const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
+      const anonKey = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
+      if (supabaseUrl && anonKey) {
+        try {
+          const { createClient } = await import('https://esm.sh/@supabase/supabase-js@2');
+          const supabase = createClient(supabaseUrl, anonKey, {
+            global: { headers: { Authorization: authHeader } },
+          });
+          const { data: { user }, error } = await supabase.auth.getUser();
+          if (!error && user) authorized = true;
+        } catch (err) {
+          console.error('[generate-prompt] auth check failed:', err);
+        }
+      }
+    }
+
+    if (!authorized) {
+      return new Response(
+        JSON.stringify({ error: 'Unauthorized' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     // Parse request
     const { name }: GeneratePromptRequest = await req.json();
 
@@ -179,8 +216,24 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    // Sanitize name before injecting into the Gemini template (audit P4-E-2).
+    // The template references {name} 20+ times — unsanitized input could
+    // attempt prompt injection. Strip newlines/control chars and limit to
+    // a conservative character set.
+    const sanitizedName = name
+      .replace(/[\r\n\t]/g, ' ')
+      .replace(/[^\w\s\-'.()]/g, '')
+      .trim()
+      .slice(0, 80);
+    if (!sanitizedName) {
+      return new Response(
+        JSON.stringify({ error: 'Name is empty after sanitization' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     // Generate prompt using Gemini
-    const prompt = PERSONA_TEMPLATE.replaceAll('{name}', name.trim());
+    const prompt = PERSONA_TEMPLATE.replaceAll('{name}', sanitizedName);
 
     const geminiResponse = await fetch(`${GEMINI_API_URL}?key=${GEMINI_API_KEY}`, {
       method: 'POST',

@@ -14,12 +14,22 @@ export default {
     'dist-electron/**/*',
     'public/**/*',
   ],
+  asarUnpack: [
+    '**/node_modules/openclaw/**',
+    '**/node_modules/sharp/**',
+    '**/node_modules/@img/**',
+  ],
   // macOS
   mac: {
     target: ['dmg', 'zip'],
     artifactName: 'PersonaHub-Desktop-${version}.${ext}',
     category: 'public.app-category.productivity',
     icon: 'build/icon.icns',
+    entitlements: 'build/entitlements.mac.plist',
+    entitlementsInherit: 'build/entitlements.mac.plist',
+    extendInfo: {
+      NSMicrophoneUsageDescription: 'PersonaHub needs microphone access for voice input — speak to your AI personas hands-free.',
+    },
   },
   dmg: {
     artifactName: 'PersonaHub-Desktop-${version}.${ext}',

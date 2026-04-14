@@ -82,7 +82,8 @@ export class ChatError extends Error {
 export async function sendMessage(
   chatflowId: string,
   message: string,
-  sessionId?: string
+  sessionId?: string,
+  signal?: AbortSignal,
 ): Promise<Response> {
   if (!chatflowId) {
     throw new ChatError(
@@ -101,7 +102,7 @@ export async function sendMessage(
   }
 
   try {
-    const response = await contractSendPrediction(chatflowId, message, true, sessionId);
+    const response = await contractSendPrediction(chatflowId, message, true, sessionId, signal);
 
     // Check for HTTP errors
     if (!response.ok) {

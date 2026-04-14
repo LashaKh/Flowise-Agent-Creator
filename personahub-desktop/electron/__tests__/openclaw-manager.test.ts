@@ -1,8 +1,14 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mock child_process and fs before importing the module
+// Mock Electron's app module
+vi.mock('electron', () => ({
+  app: {
+    getAppPath: vi.fn(() => '/fake/app'),
+    isPackaged: false,
+  },
+}));
+
 vi.mock('node:child_process', () => ({
-  execSync: vi.fn(() => '/usr/local/bin'),
   spawn: vi.fn(),
 }));
 
@@ -12,80 +18,90 @@ vi.mock('node:fs', () => ({
     mkdirSync: vi.fn(),
     readFileSync: vi.fn(() => '{}'),
     writeFileSync: vi.fn(),
-    createWriteStream: vi.fn(),
-    unlinkSync: vi.fn(),
+    rmSync: vi.fn(),
   },
   existsSync: vi.fn(() => false),
   mkdirSync: vi.fn(),
   readFileSync: vi.fn(() => '{}'),
   writeFileSync: vi.fn(),
+  rmSync: vi.fn(),
 }));
 
-vi.mock('node:https', () => ({ default: { get: vi.fn() } }));
-vi.mock('node:http', () => ({ default: { get: vi.fn(), request: vi.fn() } }));
+vi.mock('node:http', () => ({ default: { get: vi.fn() } }));
 
-import {
-  getPlatformKey,
-  getNodeDownloadUrl,
-  getNodePath,
-  getNpmPath,
-  getOpenClawBinPath,
-} from '../openclaw-manager';
+import { getOpenClawEntryPath, checkInstallation, writeConfig } from '../openclaw-manager';
+import { app } from 'electron';
+import fs from 'node:fs';
 
-describe('getPlatformKey', () => {
-  it('returns a valid platform string', () => {
-    const validKeys = ['darwin-arm64', 'darwin-x64', 'win32-x64', 'linux-x64'];
-    // On the current machine, one of these must be valid
-    const key = getPlatformKey();
-    expect(validKeys).toContain(key);
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+describe('getOpenClawEntryPath', () => {
+  it('returns path inside node_modules in dev mode', () => {
+    Object.defineProperty(app, 'isPackaged', { value: false, configurable: true });
+    vi.mocked(app.getAppPath).mockReturnValue('/project/personahub-desktop');
+
+    const result = getOpenClawEntryPath();
+    expect(result).toContain('node_modules/openclaw/openclaw.mjs');
+    expect(result).not.toContain('app.asar.unpacked');
+  });
+
+  it('returns asar.unpacked path in production', () => {
+    Object.defineProperty(app, 'isPackaged', { value: true, configurable: true });
+    vi.mocked(app.getAppPath).mockReturnValue('/app/resources/app.asar');
+
+    const result = getOpenClawEntryPath();
+    expect(result).toContain('app.asar.unpacked');
+    expect(result).toContain('node_modules/openclaw/openclaw.mjs');
   });
 });
 
-describe('getNodeDownloadUrl', () => {
-  it('returns a .tar.gz URL on macOS/Linux', () => {
-    const url = getNodeDownloadUrl();
-    if (process.platform === 'win32') {
-      expect(url).toMatch(/\.zip$/);
-    } else {
-      expect(url).toMatch(/\.tar\.gz$/);
-    }
+describe('checkInstallation', () => {
+  it('returns false when config file is missing', async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    const result = await checkInstallation();
+    expect(result).toBe(false);
   });
 
-  it('includes the Node.js version', () => {
-    const url = getNodeDownloadUrl();
-    expect(url).toContain('nodejs.org/dist/v');
+  it('returns true when both config and entry script exist', async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    const result = await checkInstallation();
+    expect(result).toBe(true);
   });
-});
 
-describe('getNodePath', () => {
-  it('returns path ending with node or node.exe', () => {
-    const nodePath = getNodePath();
-    if (process.platform === 'win32') {
-      expect(nodePath).toMatch(/node\.exe$/);
-    } else {
-      expect(nodePath).toMatch(/\/bin\/node$/);
-    }
+  it('returns false when only one file exists', async () => {
+    vi.mocked(fs.existsSync).mockReturnValueOnce(true).mockReturnValueOnce(false);
+    const result = await checkInstallation();
+    expect(result).toBe(false);
   });
 });
 
-describe('getNpmPath', () => {
-  it('returns path ending with npm or npm.cmd', () => {
-    const npmPath = getNpmPath();
-    if (process.platform === 'win32') {
-      expect(npmPath).toMatch(/npm\.cmd$/);
-    } else {
-      expect(npmPath).toMatch(/\/bin\/npm$/);
-    }
+describe('writeConfig', () => {
+  it('creates the config directory', () => {
+    writeConfig('test-key', 'google');
+    expect(fs.mkdirSync).toHaveBeenCalledWith(
+      expect.stringContaining('.openclaw'),
+      { recursive: true }
+    );
   });
-});
 
-describe('getOpenClawBinPath', () => {
-  it('returns path ending with openclaw or openclaw.cmd', () => {
-    const binPath = getOpenClawBinPath();
-    if (process.platform === 'win32') {
-      expect(binPath).toMatch(/openclaw\.cmd$/);
-    } else {
-      expect(binPath).toMatch(/openclaw$/);
-    }
+  it('writes valid JSON with google provider', () => {
+    writeConfig('test-key', 'google');
+    const writeCall = vi.mocked(fs.writeFileSync).mock.calls[0]!;
+    const config = JSON.parse(writeCall[1] as string);
+
+    expect(config.models.providers.google.apiKey).toBe('test-key');
+    expect(config.agents.defaults.model.primary).toBe('google/gemini-2.5-flash');
+    expect(config.gateway.port).toBe(18789);
+  });
+
+  it('writes valid JSON with anthropic provider', () => {
+    writeConfig('sk-ant-test', 'anthropic');
+    const writeCall = vi.mocked(fs.writeFileSync).mock.calls[0]!;
+    const config = JSON.parse(writeCall[1] as string);
+
+    expect(config.models.providers.anthropic.apiKey).toBe('sk-ant-test');
+    expect(config.agents.defaults.model.primary).toBe('anthropic/claude-sonnet-4-5');
   });
 });
