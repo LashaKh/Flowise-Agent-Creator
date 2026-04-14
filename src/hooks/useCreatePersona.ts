@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import type { Persona, ApiResponse, PermissionConfigValue } from '../types';
 
@@ -10,16 +10,31 @@ interface UseCreatePersonaReturn {
 }
 
 /**
- * Custom hook to create a new persona via the Supabase Edge Function
+ * Custom hook to create a new persona via the Supabase Edge Function.
+ *
+ * Uses an `isMountedRef` to avoid setting state after unmount (audit
+ * finding P4-F). Supabase's functions.invoke doesn't accept an AbortSignal
+ * directly, so we use the mounted-flag pattern to at least skip stale
+ * state updates on unmount.
  */
 export function useCreatePersona(): UseCreatePersonaReturn {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<Persona | null>(null);
 
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => { isMountedRef.current = false; };
+  }, []);
+
+  const safeSet = <T,>(fn: (v: T) => void, value: T) => {
+    if (isMountedRef.current) fn(value);
+  };
+
   const createPersona = async (name: string, permissions?: PermissionConfigValue): Promise<Persona | null> => {
-    setIsLoading(true);
-    setError(null);
+    safeSet(setIsLoading, true);
+    safeSet(setError, null);
 
     try {
       const { data: responseData, error: functionError } = await supabase.functions.invoke<ApiResponse<Persona>>(
@@ -32,14 +47,14 @@ export function useCreatePersona(): UseCreatePersonaReturn {
 
       if (functionError) {
         const errorMessage = functionError.message || 'Failed to create persona';
-        setError(errorMessage);
-        setIsLoading(false);
+        safeSet(setError, errorMessage);
+        safeSet(setIsLoading, false);
         return null;
       }
 
       if (responseData?.error) {
-        setError(responseData.error);
-        setIsLoading(false);
+        safeSet(setError, responseData.error);
+        safeSet(setIsLoading, false);
         return null;
       }
 
@@ -50,18 +65,18 @@ export function useCreatePersona(): UseCreatePersonaReturn {
           createdAt: new Date(responseData.data.createdAt),
           updatedAt: new Date(responseData.data.updatedAt),
         };
-        setData(transformedData);
-        setIsLoading(false);
+        safeSet(setData, transformedData);
+        safeSet(setIsLoading, false);
         return transformedData;
       }
 
-      setError('Unexpected response from server');
-      setIsLoading(false);
+      safeSet(setError, 'Unexpected response from server');
+      safeSet(setIsLoading, false);
       return null;
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'An unexpected error occurred';
-      setError(errorMessage);
-      setIsLoading(false);
+      safeSet(setError, errorMessage);
+      safeSet(setIsLoading, false);
       return null;
     }
   };

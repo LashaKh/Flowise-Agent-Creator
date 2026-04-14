@@ -1,0 +1,662 @@
+# Implementation Plan: Voice & Avatar Phase — Production-Ready
+
+<!-- UPGRADED -->
+
+## Constitution Check
+
+| Principle | Compliant | Notes |
+|-----------|-----------|-------|
+| Simplicity First | [x] | Cloud TTS via existing OpenClaw gateway — no new infrastructure. 2D SVG face — no 3D engine. `PersonaSettings` JSON blob — no migration. Each phase ships independently. |
+| API-First Integration | [x] | Cloud TTS routes through the existing local gateway at 127.0.0.1:18789. Same trust boundary as existing LLM calls. No new external API surface. |
+| User Experience Excellence | [x] | First-audio in ~500ms (cloud) or ~50ms (OS-native). Captions default on. Keyboard-navigable end-to-end. `prefers-reduced-motion` respected. Graceful fallback on every failure. |
+| Security by Default | [x] | API keys in OS secure store only. CSP introduced. IPC sender validation on all new channels. Voice audio never persisted to disk. Mic permission lazy-requested with explanation. |
+| Observable Operations | [x] | Voice event log (no PII/audio/keys). Run Diagnostics health check. Cost estimate in Settings. Provider indicator on avatar. Per-stage error codes on failure. |
+
+---
+
+## Prerequisites
+
+- [ ] Verify OpenClaw version is ≥2026.4.7 in `personahub-desktop/package.json` (TTS routing support)
+- [ ] Confirm `docs.openclaw.ai/tools/tts` matches the expected POST endpoint shape
+- [ ] Capture current cold-start baseline time on reference low-spec hardware (for regression testing)
+- [ ] Capture current installer size (for +15MB growth budget)
+- [ ] Capture current renderer memory baseline (for +20MB growth budget in voice-output-only mode)
+- [ ] Confirm `window.speechSynthesis` works in current Electron 35 dev environment (quick devtools test)
+- [ ] Read the full spec at `specs/003-voice-avatar/spec.md` (666 lines)
+- [ ] Read the research decisions at `specs/003-voice-avatar/research.md`
+- [ ] Read the data model at `specs/003-voice-avatar/data-model.md`
+- [ ] **CRITICAL**: Upgrade `openclaw` from `2026.3.2` to `>= 2026.4.7` in `package.json` — current version does NOT have TTS routing. Run `pnpm install`. Verify no breaking changes to existing `sendMessage` / `generatePrompt` / `connectApprovalWebSocket` / gateway startup in `openclaw-client.ts` and `openclaw-manager.ts`. Verify `asarUnpack` glob in `electron-builder.config.js` line 18 still matches the new package layout.
+- [ ] **CRITICAL**: Fix the preload.ts ghost-listener pattern (all 7 `ipcRenderer.on()` calls at lines 19, 42, 64, 67, 83, 86, 122 return `void` instead of cleanup functions). Refactor each `onX` method to return `() => ipcRenderer.removeListener(channel, handler)`. This is a prerequisite for adding any new voice IPC listeners. The `useChat.ts` line 99 cast `as unknown as () => void` should become a real cleanup call after this fix. **Do NOT retroactively fix existing non-voice listeners in the same PR if scope is a concern — but DO fix any listener that voice code will share.**
+- [ ] **CRITICAL**: Install React test dependencies: `pnpm add -D @testing-library/react @testing-library/jest-dom jsdom`. Update `vitest.config.ts` to add `environment: 'jsdom'` (or per-file `/// <reference>` comments). Verify a trivial React hook test runs. This is a prerequisite for all hook and component tests in Weeks 1–4. The project currently has zero React test infrastructure — all 4 existing tests are pure Node.js.
+- [ ] Provision cross-platform test environments: (a) Windows 10+ VM or physical machine for Day 12 and Day 19 manual tests; (b) Linux VM with PipeWire (Ubuntu 24.04 recommended). Document VM access so test tasks are not blocked on Day 19.
+- [ ] Install accessibility audit tool: `pnpm add -D @axe-core/cli`. Add a test script to `package.json`: `"test:a11y"`. Verify the tool runs against existing UI before adding voice components.
+
+---
+
+## Architecture Notes (from Codebase Audit)
+
+These notes correct assumptions in the original plan based on actual codebase inspection. **Read before starting any task.**
+
+### Corrected line references (files may have shifted since round-1 research)
+
+| Plan reference | Actual location | Correction |
+|---|---|---|
+| `useChat.ts:74` (chunk.done trigger) | **Line 65** (`if (chunk.done)`) | Final content captured at line 67 |
+| `ChatInput.tsx:50-52` (mic button slot) | **Before line 42** (before `<textarea>`) | Inserting between lines 50-52 would place mic AFTER textarea, violating the spec's "left of textarea" requirement |
+| `ChatWindow.tsx:215-218` (face band slot) | **Between line 215 (header end) and line 218** | Verify at implementation time — these may drift |
+| `PersonaSettingsPanel.tsx:212` (voice section slot) | **After line 212** (after emoji avatar `</div>`) | Before System Prompt section at line 214 |
+| `ChatSidebar.tsx:416` (creation modal voice picker) | **After line 416** (description helper text) | Before Advanced toggle at line 419 |
+| `main.ts:467` (IPC registration) | **Before line 468** (closing brace of `setupIPC()`) | After existing `openclaw:install` handler |
+
+### `useChat.ts` has no subscription mechanism
+
+`useChat` returns `{ messages, isStreaming, sendMessage }` — no callback, no event emitter. The plan's voice hook cannot "subscribe" to useChat. **Fix**: Extend `useChat` to accept an optional `onAssistantDone?: (messageContent: string, personaId: string) => void` callback. Call it at line 67 inside the `chunk.done` branch. `useVoiceOutput` passes this callback to trigger TTS.
+
+### `secure-store.ts` is single-key only
+
+The existing `secure-store.ts` stores one encrypted file (`auth-token.enc`). It does NOT support multiple named keys. **Fix**: Create `electron/voice-key-store.ts` wrapping `safeStorage.encryptString` / `decryptString` with per-provider files (`voice-key-{providerId}.enc` in `userData`). Model after `secure-store.ts` lines 18-64 but with a parameterized file name.
+
+### GlobalVoicePrefs has no persistence story in existing code
+
+Existing Settings writes directly to `user_preferences` table via raw SQL. There is no abstracted settings store. **Fix**: Persist GlobalVoicePrefs as a JSON file at `app.getPath('userData')/voice-prefs.json`. Create IPC channels `voice:getPrefs` / `voice:setPrefs`. Reuse the existing `Section` and `ToggleRow` helper components from `Settings.tsx` lines 206-245 for the voice settings UI.
+
+### Settings.tsx `Section` component is NOT collapsible
+
+The existing `Section` helper (Settings.tsx lines 206-212) is a simple titled card with no collapse/expand behavior. **Fix**: Extend with optional `collapsible?: boolean` and `defaultOpen?: boolean` props. Apply collapsible behavior to new Voice & Avatar subsections only — existing sections remain static.
+
+### ChatWindow header is too thin for multiple voice controls
+
+The header (lines 208-215) is minimal: `px-4 py-3`, just persona name + emoji. **Fix**: Redesign as a two-part flex row: left = avatar + name + state badge, right = provider indicator + CC toggle + collapse chevron + stop button. Add `flex items-center justify-between gap-2`.
+
+### `generateSpeech()` must handle binary responses (first in codebase)
+
+Existing `generatePrompt()` at `openclaw-client.ts` lines 409-482 is the reuse pattern — same HTTP POST shape (hostname, port, auth header). Key difference: `generateSpeech` returns binary (ArrayBuffer), not JSON. **Do NOT** call `res.setEncoding('utf-8')`. Collect chunks as `Buffer[]`, `Buffer.concat`, convert to ArrayBuffer via `Uint8Array.from(buffer).buffer`.
+
+### Space-hold PTT conflicts with textarea input
+
+When the user holds Space in the textarea, it types spaces. **Fix**: Space-hold PTT only activates when the textarea is empty AND focused (`text.length === 0 && e.key === ' '`). Call `e.preventDefault()` to suppress the space character. Add guard to `ChatInput.tsx` inside `handleKeyDown`.
+
+### Voice interruption should also stop the LLM stream
+
+`stopGeneration` IPC exists at `preload.ts` line 70-71 and `main.ts` line 176-178 but is never called by `useChat`. When voice interruption fires, also call `window.electronAPI.agent.stopGeneration(personaId)` to prevent the old reply from continuing to stream.
+
+### `src/lib/` directory does not exist yet
+
+Create `personahub-desktop/src/lib/speech/` directory on Day 1 before writing any speech files.
+
+### No toast component exists
+
+The plan assumes toasts in 4 places but no toast component exists. Either create a minimal `src/components/Toast.tsx` (matching the existing Settings.tsx saved-notification pattern at line 194-197) or use `react-hot-toast` which IS already in `package.json` (`"react-hot-toast": "^2.6.0"`). **Recommendation**: use existing `react-hot-toast` — it's already a dependency.
+
+### `electron-builder.config.js` has no `mac.entitlements` field
+
+The plist file exists at `build/entitlements.mac.plist` but `electron-builder.config.js` does not reference it. **Fix in Week 2**: Add `entitlements: 'build/entitlements.mac.plist'` and `entitlementsInherit: 'build/entitlements.mac.plist'` to the `mac` section (after line 26).
+
+### Shortcuts must go through existing `shortcuts.ts`
+
+The existing `electron/shortcuts.ts` registers `CmdOrCtrl+Shift+P` in `registerShortcuts()` and tears down ALL shortcuts in `unregisterShortcuts()` via `globalShortcut.unregisterAll()`. Add the mic kill shortcut inside the existing `registerShortcuts()` function — do NOT create a separate registration path.
+
+### SVG colors need manual sync with Tailwind gray scale
+
+Tailwind classes don't apply inside `<svg>` elements the same way. Use hex values directly: head fill `#1f2937` (gray-800), eye fill `#d1d5db` (gray-300), mouth stroke `#9ca3af` (gray-400). Extract as constants at top of `AvatarFace.tsx`. Add TODO comment for future light-theme migration to CSS custom properties.
+
+---
+
+## Test Infrastructure Notes (from Testing Audit)
+
+### Browser API mock strategy (no existing precedent)
+
+Create `src/lib/speech/__tests__/mocks.ts` containing:
+- `mockSpeechSynthesis()` — vi.fn()-based `window.speechSynthesis` with controllable `getVoices()`, `speak()`, `cancel()`, event dispatch on `SpeechSynthesisUtterance`
+- `mockElectronTTS()` — vi.fn()-based `window.electronAPI.tts` object
+- `mockMediaDevices()` — vi.fn()-based `navigator.mediaDevices.getUserMedia` with grant/deny simulation
+- `mockUseMicVAD()` — `vi.mock("@ricky0123/vad-react")` returning controllable listening/speaking/start/stop
+
+Follow the `vi.mock()` hoisting pattern from `electron/__tests__/openclaw-manager.test.ts`.
+
+### Worker thread mock strategy
+
+Create `src/lib/speech/__tests__/worker-mock.ts`: a mock Worker class that intercepts `postMessage`/`onmessage`. Mock the Worker constructor globally: `vi.stubGlobal('Worker', MockWorker)`.
+
+### Existing test patterns to follow
+
+- Use `vi.mock('node:http')` for gateway mocks
+- Reuse `makePersona()` factory from `config-factory.test.ts` line 25 for persona fixtures
+- Place voice tests at `electron/__tests__/voice-tts.test.ts` and `src/lib/speech/__tests__/ttsRouter.test.ts`
+- Follow `describe/it/beforeEach(() => vi.clearAllMocks())` convention
+
+### Soak test harness (create on Day 17)
+
+Create `scripts/soak-test.ts`: launches built Electron app, sends alternating messages at 30-second intervals, samples `process.getProcessMemoryInfo()` every 60 seconds, logs to CSV, exits with code 1 if memory growth exceeds threshold. Accepts `--duration` (hours) and `--mode` (voice-output-only | full-io). This is a local script, not a CI job.
+
+### Performance measurement tools (create on Day 5)
+
+- `src/lib/perf/fpsCounter.ts`: requestAnimationFrame FPS sampler, dev-only overlay
+- `electron/perf-ipc.ts`: expose `process.memoryUsage()` via IPC channel `perf:memory` (dev-mode only)
+
+### "Integration tests" are Vitest with mocked IPC, not Playwright
+
+The project has NO Playwright/Spectron setup. All "automated integration tests" in this plan are Vitest tests with mocked IPC and mocked browser APIs. True Electron E2E tests are deferred to a future testing infrastructure sprint.
+
+### FR-14 edge cases with no test coverage (8 of 23)
+
+These must be added to Day 17 task 96: #150 (SSML injection + Unicode names), #153 (empty OS voice list), #156 (max length enforcement), #157 (all tiers unavailable), #158 (stale provider on persona load), #160 (clean state after crash — manual), #162 (Retry controls), #163 (mid-utterance provider switch).
+
+### Additional test cases to add
+
+- `useSpeechSynthesis`: voiceschanged race, localService filter, per-persona variation, cancel, boundary events
+- `useVoiceOutput` state machine: every transition in the VoiceSession diagram, interrupt clears audio within 200ms mock
+- Cost governance: monthly ceiling, daily cap, 80% warning, stuck-loop simulation, counter reset
+- IPC validation: accept main-window sender, reject about:blank sender, rate limiter, text length cap
+- Rollback verification: feature flag off → no voice UI → persona data intact → no console errors
+
+---
+
+## Implementation Phases
+
+The plan follows a **staged production** model — each week ships a production-ready increment. Week 1 is the minimum viable voice experience. Each subsequent week layers on top without breaking what shipped before.
+
+---
+
+### Week 1: Voice Output + 2D Face (Days 1–6)
+
+**Goal**: Personas speak their replies aloud through a 2D animated face. No microphone, no STT, no security changes, no WASM downloads. Ships as a complete, tested, production-ready feature on its own.
+
+#### Day 1 — Cloud TTS wiring via OpenClaw
+
+**Tasks**:
+1. [ ] Read OpenClaw TTS API docs and verify the POST endpoint (`/v1/audio/speech`) accepts `{ text, voice, provider }` and returns audio bytes
+2. [ ] Add `generateSpeech(text: string, voiceId: string, provider: string): Promise<ArrayBuffer>` to `electron/openclaw-client.ts` — POST to `http://127.0.0.1:18789/v1/audio/speech`, return the response buffer
+3. [ ] Register IPC channel `tts:synthesize` in `electron/main.ts` (inside `setupIPC()` near line 467) — accepts `{ text, voiceId, provider, personaId }`, validates sender frame, validates text length ≤ 2000 chars, calls `generateSpeech`, returns ArrayBuffer
+4. [ ] Expose `window.electronAPI.tts.synthesize(text, voiceId, provider)` in `electron/preload.ts` — returns `Promise<ArrayBuffer>`, returns proper cleanup function (fix the ghost-listener pattern)
+5. [ ] Add `tts` group to ElectronAPI type declaration in `src/types/index.ts`
+6. [ ] Smoke test: call from devtools console with hardcoded text → confirm audio bytes return
+
+**Files touched**: `electron/openclaw-client.ts`, `electron/main.ts`, `electron/preload.ts`, `src/types/index.ts`
+
+#### Day 1 — Web Speech API fallback hook
+
+**Tasks**:
+7. [ ] Create `src/lib/speech/useSpeechSynthesis.ts`:
+   - Handle `voiceschanged` race with retry/polling fallback (well-known Chromium quirk)
+   - Filter voices by `localService === true` (privacy: avoid Microsoft Aria Online routing to Azure)
+   - Expose `speak(text, options)`, `cancel()`, `isSpeaking`, `currentWord` (from `boundary` events)
+   - Per-persona voice variation: `rate = 0.95 + (hash(personaId) % 10) / 100`, `pitch` similarly
+   - Return handle for amplitude estimation (synthetic envelope from `boundary` events)
+8. [ ] Create `src/lib/speech/ttsRouter.ts`:
+   - Signature: `createTtsRouter(settings: GlobalVoicePrefs): TtsRouter`
+   - `speak(text, personaId)` → tries cloud via IPC `tts:synthesize` → on failure, falls back to `useSpeechSynthesis` → on failure, returns silent with caption-only
+   - `cancel()` → stops whatever is playing
+   - `onStart`, `onBoundary`, `onEnd` event callbacks
+   - Returns common interface regardless of which provider won
+   - Implements the exponential-backoff retry (up to 3 attempts, per NFR #13)
+   - Implements the session flap guard (max 5 cloud↔native transitions per session)
+9. [ ] Smoke test: TTS router in isolation — confirm cloud happy path and Web Speech fallback
+
+**Files created**: `src/lib/speech/useSpeechSynthesis.ts`, `src/lib/speech/ttsRouter.ts`
+
+#### Day 2 — SVG face component
+
+**Tasks**:
+10. [ ] Create `src/components/AvatarFace.tsx`:
+    - SVG face: circle head, oval eyes (with blink animation), ellipse mouth, optional eyebrow arcs
+    - Props: `amplitude` (0–1, drives mouth `ry`), `state` ('idle' | 'thinking' | 'speaking' | 'listening' | 'error'), `accentHue` (0–360), `collapsed` (boolean)
+    - `forwardRef` + `useImperativeHandle` exposing `setAmplitude(n)`, `setState(s)`
+    - Idle animations: blink every 3–7s (randomized CSS `animation-delay`), subtle breathing (CSS `transform: scale()` cycle)
+    - State-specific rendering: thinking = slight upward gaze + pulse ring, speaking = mouth animating, listening = emerald ring, error = rose ring + neutral expression, idle = faint ring
+    - Respect `prefers-reduced-motion`: disable breathing/sway, keep blink + mouth
+    - Responsive: fills container width, min-height 240px
+    - `aria-label="Animated avatar of {personaName}, currently {state}"`
+    - Theme: use existing dark palette (gray-800 radial gradient background, white/gray features)
+    - Per-persona tinting via `filter: hue-rotate(${accentHue}deg)` on the SVG group
+11. [ ] Create 6 face style variants (same component, different proportions/features controlled by `styleId` prop):
+    - `face-warm`, `face-cool`, `face-playful`, `face-serious`, `face-gentle`, `face-bold` (see data-model.md for descriptions)
+12. [ ] Manual visual QA: confirm all 6 styles render, all 5 states look correct, reduced-motion works, dark theme looks good
+
+**Files created**: `src/components/AvatarFace.tsx`
+
+#### Day 3 — Wire into chat flow
+
+**Tasks**:
+13. [ ] Extend `PersonaSettings` interface in `src/types/index.ts` with: `voiceEnabled?`, `voiceProvider?`, `voiceId?`, `voiceSpeed?`, `avatarEnabled?`, `avatarStyleId?`, `avatarAccentHue?`
+14. [ ] Create `src/hooks/useVoiceOutput.ts`:
+    - Instantiates `ttsRouter` with global + persona settings
+    - Subscribes to `useChat` messages — watches for the `chunk.done` finalization at line 74 of `useChat.ts`
+    - When a new assistant message is finalized: call `ttsRouter.speak(finalContent, personaId)`
+    - Exposes: `isSpeaking`, `currentAmplitude`, `currentWord`, `cancel()`
+    - Handles interruption: on new user message → `cancel()` before sending
+    - Handles persona switch: `cancel()` on persona change
+    - Cleans up on unmount (proper unsubscribe — fix the ghost-listener pattern from preload.ts)
+15. [ ] Wire `<AvatarFace>` into `ChatWindow.tsx`:
+    - Insert collapsible face band between the persona header (line 215) and `<ChatMessages>` (line 218)
+    - Add collapse/expand chevron in the persona header
+    - Add small state badge in header when face is collapsed
+    - Pass `amplitude`, `state`, `accentHue` from `useVoiceOutput` hook
+    - Add Stop Voice button (visible when `isSpeaking`)
+16. [ ] Wire interruption into `ChatInput.tsx`:
+    - On `handleSend()`: call `voiceOutput.cancel()` before the existing send flow
+17. [ ] Add caption strip below the face band:
+    - 32px tall, full width, `aria-live="polite"`
+    - Updates from `currentWord` / `onBoundary` events
+    - Toggle via a CC button in the persona header
+    - Default: visible
+    - Stays visible for 2 seconds after reply finishes, then clears
+
+**Files created**: `src/hooks/useVoiceOutput.ts`
+**Files modified**: `src/types/index.ts`, `src/components/ChatWindow.tsx`, `src/components/ChatInput.tsx`
+
+#### Day 4 — Settings UI + provider configuration
+
+**Tasks**:
+18. [ ] Create the "Voice & Avatar" section in `src/components/Settings.tsx`:
+    - New collapsible section alongside existing sections on the same page
+    - Subsections: Output, Input (placeholder for Week 2), Face, Providers & Keys, Privacy
+    - Output subsection: enable/disable toggle, default provider dropdown, default voice dropdown, voice speed slider (0.5–2.0), preview button ("Hi, I'm PersonaHub!")
+    - Face subsection: enable/disable toggle, default style picker (grid of 6 thumbnails, 80×80, selected = indigo ring)
+    - Providers & Keys: API key fields for OpenAI, ElevenLabs, Google — stored via `electron/secure-store.ts` pattern. Test button per provider. Cost estimate display.
+    - Privacy: local-only mode toggle, privacy statement text
+    - Captions toggle, reduced-motion override (auto/always/never), auto-stop-on-blur toggle
+    - Monthly spending ceiling input per provider
+19. [ ] Wire API key storage via existing `electron/secure-store.ts`:
+    - Add IPC channels: `voice:storeKey`, `voice:getKey`, `voice:deleteKey`
+    - Namespace: `personahub-desktop/{provider-id}`
+    - Validate sender frame on all channels
+20. [ ] Add voice/face fields to `PersonaSettingsPanel.tsx`:
+    - New block after the emoji avatar section (line 212)
+    - Voice: provider override dropdown, voice picker with preview, speed slider
+    - Face: style picker with thumbnails, accent hue color picker
+21. [ ] Add voice/face pickers to `ChatSidebar.tsx` creation modal:
+    - Insert between Description (line 416) and Advanced disclosure
+    - Voice picker: simplified radio list with inline preview
+    - Face picker: grid of 6 style thumbnails
+    - Both optional — skip defaults to global settings
+
+**Files modified**: `src/components/Settings.tsx`, `src/components/PersonaSettingsPanel.tsx`, `src/components/ChatSidebar.tsx`
+
+#### Day 5 — Error handling, accessibility, polish
+
+**Tasks**:
+22. [ ] Implement text normalization before TTS (FR-14 #149):
+    - Create `src/lib/speech/textNormalizer.ts`: strip Markdown, replace URLs with "link", code fences with "code block", handle empty/whitespace-only, cap at 2000 chars
+    - Wire into `ttsRouter.speak()` before sending to any provider
+23. [ ] Implement voice event log:
+    - Create `src/lib/speech/voiceEventLog.ts`: append-only local log, 7-day retention, auto-prune on start
+    - Log: voice-output-started/completed/fallback/error, provider used, duration, error category/code
+    - No PII, no audio, no API keys, no reply text
+24. [ ] Implement Run Diagnostics button:
+    - Check: secure store readable, gateway reachable, cloud provider auth valid (light probe), OS voice enumeration, model file status
+    - Report pass/fail per stage with specific error codes
+25. [ ] Accessibility pass:
+    - Verify all new elements have `aria-label`, focus indicators, keyboard reachability
+    - Verify caption strip is `aria-live="polite"`
+    - Verify state badge announced on change
+    - Verify `prefers-reduced-motion` disables idle animations
+    - Verify WCAG 2.2 AA contrast on all new text/controls
+26. [ ] First-run experience:
+    - On first app launch after this version: detect no TTS provider configured → show one-time toast "Voice is now available! Configure in Settings → Voice & Avatar"
+    - macOS hint: "For higher-quality voices on macOS, install Siri Enhanced voices in System Settings → Accessibility → Spoken Content"
+27. [ ] Error handling sweep:
+    - Cloud failure → Web Speech fallback (silent, with small notice)
+    - Invalid API key → actionable error in Settings with provider-specific recovery guidance
+    - Gateway unavailable → OS-native fallback within 2 seconds + health indicator
+    - No OS voices → disable voice with platform-specific install instructions
+    - Rate limit → distinguish from billing error in the notice text
+    - Persona deleted/edited while speaking → immediate stop, clean state
+
+**Files created**: `src/lib/speech/textNormalizer.ts`, `src/lib/speech/voiceEventLog.ts`
+
+#### Day 6 — Testing + ship Week 1
+
+**Tasks**:
+28. [ ] Write unit tests for:
+    - `ttsRouter`: mock cloud IPC + Web Speech, test fallback chain, test cancel, test retry policy
+    - `textNormalizer`: all input variants (empty, whitespace, URL, code, Markdown, emoji, 50KB input)
+    - `voiceEventLog`: append, prune, redaction
+    - `PersonaSettings` extension: new fields serialize/deserialize through `rowToPersona`
+29. [ ] Manual test matrix:
+    - macOS with no API key → Web Speech speaks, toast suggests Siri voices
+    - macOS with OpenAI key → cloud TTS speaks, caption synced, face animates
+    - Windows 11 with no API key → Aria/Jenny/Guy speak via Web Speech
+    - Offline (disconnect network) → silent fallback to Web Speech, small notice
+    - Persona switch mid-speech → old speech cancels within 200ms, new persona loads
+    - Rapid-fire 5 messages → no audio overlap, no stuck state
+    - Face collapsed → state badge in header still updates
+    - `prefers-reduced-motion` → idle animations off, mouth still moves
+    - Keyboard-only navigation → all controls reachable
+30. [ ] Measure:
+    - Cold-start time (must be within 10% of baseline)
+    - Installer size growth (must be <15MB — expect ~0 since no new binary assets)
+    - Renderer memory during active speech (must be <baseline + 20MB)
+    - CPU during speech (must be <5%)
+31. [ ] Commit, build, test installer on macOS
+
+**Deliverables**: Voice output working end-to-end, 2D animated face, Settings UI, captions, accessibility, full error handling. **Shippable as-is.**
+
+---
+
+### Week 2: Voice Input + Security Hardening (Days 7–12)
+
+**Goal**: Users can talk to their personas. Full microphone support with security hardening (Electron upgrade, CSP, entitlements, permission handling, hot-mic hygiene).
+
+#### Day 7 — Electron upgrade + CSP + entitlements
+
+**Tasks**:
+32. [ ] Upgrade `electron` in `package.json` from `^35.0.0` to `^38.8.6` (closes CVE-2026-34777, -34780, -34781, -34770)
+33. [ ] `pnpm install` and verify the existing app still builds and runs without regressions
+34. [ ] Add `session.defaultSession.setPermissionRequestHandler` in `electron/main.ts` (accept `media` from our origin only, deny all else)
+35. [ ] Add `session.defaultSession.setPermissionCheckHandler` in `electron/main.ts`
+36. [ ] Install CSP via `session.defaultSession.webRequest.onHeadersReceived` in `electron/main.ts`:
+    ```
+    default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline';
+    img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:;
+    connect-src 'self' http://127.0.0.1:18789 ws://127.0.0.1:18789;
+    font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none';
+    ```
+    (Dev mode: add `ws://localhost:<vite-port>` to `connect-src`)
+37. [ ] Add to `build/entitlements.mac.plist`: `com.apple.security.device.microphone`, `com.apple.security.device.audio-input`
+38. [ ] Add to `electron-builder.config.js` under `mac.extendInfo`: `NSMicrophoneUsageDescription: "PersonaHub uses your microphone so you can speak with your AI personas. Audio is transcribed on-device and never leaves your computer."`
+39. [ ] Add `mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))` in `main.ts`
+40. [ ] Add `mainWindow.webContents.on('will-navigate', ...)` guard in `main.ts`
+41. [ ] Smoke test: existing text chat still works, existing persona operations still work, CSP violations = 0 in devtools console
+
+**Files modified**: `package.json`, `pnpm-lock.yaml`, `electron/main.ts`, `build/entitlements.mac.plist`, `electron-builder.config.js`
+
+#### Day 8 — Moonshine STT integration
+
+**Tasks**:
+42. [ ] `pnpm add @huggingface/transformers` (if not already present via HeadTTS dependency tree — check)
+43. [ ] Copy ONNX Runtime Web WASM files to `public/ort/` via `vite-plugin-static-copy` (add to `vite.config.ts`)
+44. [ ] Create `src/workers/moonshine.worker.ts`:
+    - Load `onnx-community/moonshine-base-ONNX` (q8) via `@huggingface/transformers` pipeline
+    - Expose `transcribe(audio: Float32Array): Promise<string>`
+    - Enforce `max_length = audio_seconds × 6.5` to prevent hallucinated decoding
+    - WebGPU → WASM automatic fallback
+45. [ ] Create `src/lib/speech/sttMoonshine.ts`:
+    - Wraps the worker: `new Worker(new URL('../workers/moonshine.worker.ts', import.meta.url), { type: 'module' })`
+    - Lazy init: worker only spawns on first `transcribe()` call
+    - Model download progress events forwarded to caller
+    - 5-minute idle → `worker.terminate()` to reclaim memory
+46. [ ] Add model download flow for first-time STT:
+    - Moonshine-base-ONNX is ~63MB, cached in IndexedDB by transformers.js
+    - Show progress modal: "Setting up voice input... 42% (~63 MB, one-time download)"
+    - Retry button on failure, disk-space check before start, hash verification after download
+47. [ ] Smoke test: pass a hardcoded Float32Array to `sttMoonshine.transcribe()` → confirm text back
+
+**Files created**: `src/workers/moonshine.worker.ts`, `src/lib/speech/sttMoonshine.ts`
+**Files modified**: `vite.config.ts` (add `vite-plugin-static-copy`)
+
+#### Day 9 — VAD + mic button + voice input hook
+
+**Tasks**:
+48. [ ] `pnpm add @ricky0123/vad-react @ricky0123/vad-web`
+49. [ ] Vendor VAD assets: copy `silero_vad_v5.onnx` + `vad.worklet.bundle.min.js` to `public/vad/` via static-copy plugin
+50. [ ] Create `src/hooks/useVoiceInput.ts`:
+    - Wraps `useMicVAD` with: `startOnLoad: false`, `minSpeechMs: 1000` (Moonshine requirement), `positiveSpeechThreshold: 0.3`, `baseAssetPath: '/vad/'`, `onnxWASMBasePath: '/ort/'`
+    - On `onSpeechEnd(audio)`: call `sttMoonshine.transcribe(audio)` → return text
+    - Exposes: `{ listening, userSpeaking, loading, error, start, stop, lastTranscript }`
+    - Auto-stop on window blur, OS lock, OS suspend (via IPC `powerMonitor` events)
+    - 60-second hard cap on recording
+    - 10-minute no-speech timeout for hands-free mode
+51. [ ] Create `src/components/MicButton.tsx`:
+    - 40×40 circular button, positioned left of textarea in `ChatInput.tsx`
+    - Idle: gray-400 mic icon. Recording: emerald-500 + pulse ring. Disabled: gray-700 + tooltip
+    - Hold to record (both click-hold and Space-hold in textarea)
+    - Escape cancels recording, preserves existing text
+    - `aria-pressed` state, `aria-label` updates
+    - First-ever press: show in-app explanation card, then trigger OS permission dialog
+    - Denied: disable with tooltip + System Settings link
+    - Revoked after grant: detect on next attempt, re-disable, clear guidance
+52. [ ] Wire into `ChatInput.tsx`:
+    - Insert `<MicButton>` to the left of the textarea (between line 50 and 52 in current layout)
+    - `onTranscript={(text) => setText(prev => prev + text)}` — transcribed text goes into input field, does NOT auto-send
+    - User reviews, edits if needed, presses Send normally
+53. [ ] Add hot-mic indicators:
+    - Red dot on avatar face when recording (on `<AvatarFace>` via `state='listening'`)
+    - Pulsing emerald ring around mic button
+    - Persona sidebar: small mic icon next to the active persona
+54. [ ] Add global mic kill shortcut: `CmdOrCtrl+Shift+M` via Electron `globalShortcut` — force-stop mic from anywhere
+    - Make configurable in Settings (check for conflicts with existing `CmdOrCtrl+Shift+P`)
+
+**Files created**: `src/hooks/useVoiceInput.ts`, `src/components/MicButton.tsx`
+**Files modified**: `src/components/ChatInput.tsx`, `electron/main.ts` (global shortcut)
+
+#### Day 10 — Privacy, hot-mic hygiene, edge cases
+
+**Tasks**:
+55. [ ] Wire `powerMonitor.on('lock-screen')` and `powerMonitor.on('suspend')` in main → IPC to renderer → `useVoiceInput.stop()`
+56. [ ] Wire `window.addEventListener('blur', ...)` → stop mic within 200ms
+57. [ ] Add privacy statement in Settings → Voice & Avatar → Privacy: "Your voice never leaves your device. Voice input is transcribed locally. Voice output text is sent to your chosen provider, using the same trust boundary as your regular chat messages."
+58. [ ] Ensure transcribed text is treated with same trust as typed text (FR-14 #166): same length limits, same sanitization, visually distinguishable in input field (e.g., italic or small icon)
+59. [ ] Verify: raw audio buffers from `useMicVAD` are garbage-collected after `transcribe()` — no disk writes
+60. [ ] On app launch: verify no residual mic session from previous run (FR-14 #160)
+61. [ ] AEC workaround: pause VAD while avatar is speaking (FR-14 #155 ordering rules), resume after `onEnd`
+62. [ ] Implement mid-speech mic press: stop speaking first, then start recording (FR-14 #155)
+
+**Files modified**: `electron/main.ts`, `src/hooks/useVoiceInput.ts`, `src/hooks/useVoiceOutput.ts`, `src/components/Settings.tsx`
+
+#### Day 11 — IPC security hardening
+
+**Tasks**:
+63. [ ] Create `electron/ipc-validation.ts`:
+    - `validateSender(event: IpcMainInvokeEvent)` → verify `event.senderFrame` matches main window
+    - Reusable across all voice IPC channels
+64. [ ] Apply `validateSender` to every new voice IPC channel: `tts:synthesize`, `voice:storeKey`, `voice:getKey`, `voice:deleteKey`, any model-download channels
+65. [ ] Add rate limiting on `tts:synthesize`: max 1 request per 500ms per window
+66. [ ] Add text length cap on `tts:synthesize`: reject text > 2000 chars
+67. [ ] Implement redaction in error handlers: mask API key patterns in all crash reports, error messages, console output, voice event log
+68. [ ] Implement cost governance: monthly ceiling + daily cap per provider, auto-fallback to OS-native on cap hit, warning at 80% threshold
+69. [ ] CI grep guards: fail build if `unsafe-eval` (without `wasm-` prefix), `sandbox: false`, `nodeIntegration: true`, or `webSecurity: false` appears in `electron/` or `dist-electron/`
+
+**Files created**: `electron/ipc-validation.ts`
+**Files modified**: `electron/main.ts`, all IPC handlers
+
+#### Day 12 — Week 2 testing + ship
+
+**Tasks**:
+70. [ ] Write unit tests for: `sttMoonshine` (mock worker, test transcribe/timeout/error), `useVoiceInput` (mock VAD, test record/cancel/timeout), `MicButton` state machine, IPC validation, redaction, cost governance
+71. [ ] Manual test matrix:
+    - macOS: mic permission grant → record → transcribe → text appears in input
+    - macOS: mic permission denied → button disables, tooltip shows
+    - macOS: permission revoked in System Settings → detected on next attempt
+    - Windows: mic works with default device, Bluetooth headphones plug/unplug handled
+    - Linux: PipeWire/PulseAudio mic capture
+    - Offline: STT works (Moonshine is fully local)
+    - Hold Space: PTT works, Escape cancels
+    - Mid-speech mic press: speech stops, recording starts
+    - Global `Cmd+Shift+M`: kills mic from any state
+    - 60-second recording cap: auto-stops
+    - `powerMonitor` lock: mic stops
+    - Rapid persona switch during recording: clean cancel
+72. [ ] Memory check: Moonshine loaded → active transcription → 5-min idle → worker terminated → memory reclaimed
+73. [ ] Commit, build, test installer on macOS + Windows
+
+**Deliverables**: Full voice input + output, Electron 38, strict CSP, mic entitlements, hot-mic safety, IPC hardening, cost governance. **Complete voice conversation capability.**
+
+---
+
+### Week 3: Per-Persona Customization + Polish (Days 13–16)
+
+**Goal**: Each persona gets its own distinct voice and face. Full picker UIs with previews.
+
+#### Day 13 — Voice picker with preview
+
+**Tasks**:
+74. [ ] Build voice picker component: grouped radio list (Female / Male), inline preview button per voice
+    - Cloud voices: fetch voice list from provider on Settings open
+    - OS-native voices: enumerate from `speechSynthesis.getVoices()` filtered by `localService === true`
+    - Preview: play "Hi, I'm {personaName}!" on click (synthesize dynamically, only one preview at a time)
+    - Show spinner during first preview on cold cache
+75. [ ] Wire into `PersonaSettingsPanel.tsx` and `ChatSidebar.tsx` creation modal
+76. [ ] Implement deterministic default voice: hash persona name → pick voice from available list so every new persona sounds different without user intervention
+
+#### Day 14 — Face picker + avatar presets
+
+**Tasks**:
+77. [ ] Build face picker component: 4×2 grid of thumbnails (80×80, rounded, selected = indigo ring + checkmark)
+78. [ ] Generate SVG thumbnails for each of the 6 avatar styles
+79. [ ] Add accent hue picker: small color wheel or hue slider next to the face picker
+80. [ ] Wire into `PersonaSettingsPanel.tsx` and `ChatSidebar.tsx` creation modal
+81. [ ] Add "Replay last reply" button next to the most recent assistant message
+82. [ ] Add undo action after voice/face save (10-second transient toast with Undo button)
+
+#### Day 15 — Cross-feature integration
+
+**Tasks**:
+83. [ ] Persona duplicate: clone voice + face settings exactly
+84. [ ] Persona export: include voice + face settings, explicitly exclude API keys, show notice
+85. [ ] Persona import: if imported persona references a provider with no local key, default to OS-native + show notice
+86. [ ] Clear chat history while speaking: stop voice, discard utterance
+87. [ ] Tray minimize: stop voice + mic within 200ms
+88. [ ] Auto-updater: postpone restart prompt 5s after last voice activity, never during active recording
+89. [ ] Feature flag: global toggle in Settings that disables entire voice+avatar feature → pre-feature experience restored
+
+#### Day 16 — Week 3 testing
+
+**Tasks**:
+90. [ ] Test per-persona voice: create 3 personas with different voices, verify each sounds correct when selected
+91. [ ] Test face picker: create persona with each style, verify renders correctly
+92. [ ] Test export/import round-trip with voice settings (confirm no key leakage)
+93. [ ] Test duplicate persona with voice settings
+94. [ ] Test feature flag on → off → on cycle
+95. [ ] Test 50 personas in sidebar: confirm smooth scrolling, sub-100ms selection
+
+**Deliverables**: Per-persona voice + face, full picker UIs, cross-feature integration, feature flag.
+
+---
+
+### Week 4: Testing, Hardening, Ship (Days 17–20)
+
+**Goal**: Production-ready. All acceptance criteria pass. All success criteria verified. Ship.
+
+#### Day 17 — Automated test suite
+
+**Tasks**:
+96. [ ] Write comprehensive unit tests for all voice code paths (target: project baseline coverage)
+97. [ ] Write automated integration tests: end-to-end happy path (send → reply → speak → face animates)
+98. [ ] Write automated keyboard-only navigation test
+99. [ ] Write automated Local-Only mode network capture test
+100. [ ] Write automated rapid-fire 5-message stress test
+101. [ ] Write automated redaction test (inject known key → verify never in output)
+102. [ ] Write automated cross-feature test (export/import/duplicate/clear-history during speech)
+
+#### Day 18 — Accessibility + screen reader audit
+
+**Tasks**:
+103. [ ] Run automated WCAG 2.2 AA audit → fix any failures
+104. [ ] Manual VoiceOver pass (macOS): verify state announcements, caption live region, keyboard nav
+105. [ ] Manual NVDA pass (Windows): same checks
+106. [ ] Verify keyboard shortcuts don't conflict with screen reader shortcuts
+107. [ ] Verify `prefers-contrast: more` doesn't break face/caption rendering
+108. [ ] Verify text alternatives for audio chirps
+
+#### Day 19 — Cross-platform + soak test
+
+**Tasks**:
+109. [ ] Full test matrix on macOS 13+ (Intel + Apple Silicon if available)
+110. [ ] Full test matrix on Windows 10+
+111. [ ] Full test matrix on Linux (Ubuntu or Fedora recent)
+112. [ ] Start 72-hour soak test: alternating voice input + output, measure memory growth per process
+113. [ ] Start 24-hour soak test variant: voice output only (Week 1 scope)
+114. [ ] Verify cold-start regression <10% on low-spec reference machine
+115. [ ] Verify installer size growth <15MB
+116. [ ] Verify renderer memory <2GB during active use on low-spec
+
+#### Day 20 — Final polish + ship
+
+**Tasks**:
+117. [ ] Review soak test results — fix any leaks found
+118. [ ] Update `CLAUDE.md` with new voice architecture section
+119. [ ] Write end-user documentation: setup guide, supported providers, troubleshooting, privacy guarantees
+120. [ ] Final review of all acceptance criteria from spec (check each one off)
+121. [ ] Tag release, build installers for macOS + Windows + Linux
+122. [ ] Sign macOS build, verify entitlements: `codesign -d --entitlements :- "release/mac-arm64/PersonaHub Desktop.app"`
+123. [ ] Ship
+
+**Deliverables**: Production-ready Voice & Avatar Phase. All acceptance criteria passed. All success criteria verified. Shipped.
+
+---
+
+## Testing Strategy
+
+### Automated tests (CI — run on every PR)
+
+| Test type | Scope | Tools |
+|---|---|---|
+| Unit tests | ttsRouter, textNormalizer, voiceEventLog, sttMoonshine mock, useVoiceInput mock, useVoiceOutput mock, PersonaSettings serialization, cost governance, IPC validation, redaction | Vitest |
+| Integration tests | End-to-end happy path (mock TTS provider), voice input happy path (mock mic + worker), fallback chain, cancel/interrupt | Vitest |
+| Accessibility audit | WCAG 2.2 AA automated | @axe-core/cli or similar |
+| Regression guards | Main bundle <500KB gz, no forbidden patterns (unsafe-eval, sandbox:false, etc.) | Custom Vitest assertions |
+| Redaction test | API key injection → verify not in outputs | Custom Vitest |
+| Network capture | Local-Only mode → zero cloud calls | Custom Vitest |
+
+### Manual tests (per-release — documented matrix)
+
+| Scenario | macOS | Windows | Linux |
+|---|---|---|---|
+| First voice moment (no key, Web Speech) | ✓ | ✓ | ✓ |
+| Cloud TTS with OpenAI key | ✓ | ✓ | ✓ |
+| Offline fallback | ✓ | ✓ | ✓ |
+| Mic grant + record + transcribe | ✓ | ✓ | ✓ |
+| Mic denied | ✓ | ✓ | ✓ |
+| Mic revoked after grant | ✓ | ✓ | — |
+| Bluetooth device unplug | ✓ | ✓ | — |
+| Space-hold PTT | ✓ | ✓ | ✓ |
+| Global Cmd+Shift+M kill | ✓ | ✓ | ✓ |
+| Keyboard-only full flow | ✓ | ✓ | ✓ |
+| Screen reader (VoiceOver/NVDA/Orca) | ✓ | ✓ | ✓ |
+| Reduced motion | ✓ | ✓ | ✓ |
+| 50 personas smooth scroll | ✓ | ✓ | ✓ |
+| Export/import with voice settings | ✓ | ✓ | ✓ |
+| Feature flag on/off cycle | ✓ | ✓ | ✓ |
+
+### Soak tests
+
+| Test | Duration | Pass criteria |
+|---|---|---|
+| Voice output only (Week 1) | 24 hours | Renderer memory growth <100MB |
+| Full voice I/O (alternating) | 72 hours | Renderer + main process memory growth each <documented ceiling |
+| Rapid-fire stress | 100 messages in 60 seconds | Zero overlapping audio, zero orphaned sessions, zero memory growth above noise |
+
+---
+
+## Rollback Plan
+
+### Per-week rollback
+
+Each week ships independently. If Week 2 (mic) has a field incident:
+1. Turn off voice input via the global feature flag in Settings → Voice & Avatar → Enable Voice Input = OFF
+2. If the flag itself is broken: revert to the Week 1 build (voice output only) which is a known-good state
+3. All persona data is preserved (voice settings are in the JSON blob, no migration to undo)
+
+### Full feature rollback
+
+If the entire voice feature must be reverted:
+1. Feature flag: Settings → Voice & Avatar → Enable Voice Output = OFF → restores pre-feature experience
+2. If flag is broken: ship a hotfix that sets `featureFlag = false` by default in the GlobalVoicePrefs init code
+3. Existing personas are unaffected — new voice fields in `PersonaSettings` are optional and ignored by older code paths
+
+### Data safety
+
+- No database migration was performed — `PersonaSettings` JSON blob is forward-compatible
+- API keys live in OS secure store, separate from app data — reverting the app does not delete keys
+- Voice event logs auto-prune after 7 days — no manual cleanup needed
+
+---
+
+## Success Metrics
+
+Mapped to spec Success Criteria with measurement method:
+
+| ID | Metric | Target | How to measure |
+|---|---|---|---|
+| SC-01 | Voice output success rate | 99% over 1000 conversations | Automated soak test counter |
+| SC-02 | First audio latency (cloud warm) | <1s for 95% of requests | Automated timing harness |
+| SC-05 | Cold-start regression | <10% of baseline | Playwright timing on reference machine |
+| SC-06 | 24h soak memory growth | <100MB renderer | `process.getProcessMemoryInfo()` in soak test |
+| SC-07 | WCAG 2.2 AA audit | Zero errors | axe-core automated scan |
+| SC-11 | User cost (cheapest cloud) | <$5/month at 10 min/day | Calculate from provider pricing × char count |
+| SC-12 | Installer size growth | <15MB | Compare build artifacts |
+| SC-14 | Face FPS on low-spec | ≥24 FPS speaking | requestAnimationFrame counter in dev build |
+| SC-15 | Transcription accuracy | ≥80% no-edit | 50-utterance manual test |
+| SC-21 | 72h soak memory growth | <ceiling per process | Automated soak test |
+| SC-23 | Cost runaway protection | <$1 in stuck-loop test | Simulated stuck synthesis + verify cap triggers |

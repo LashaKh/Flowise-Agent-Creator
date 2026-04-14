@@ -4,18 +4,24 @@
  * This file does three things:
  * 1. Opens (or creates) the SQLite database file in the app's user data folder
  * 2. Runs the schema to create all tables (safe to re-run — uses IF NOT EXISTS)
- * 3. Registers IPC handlers so the renderer process can query the database
- *    through the preload bridge (window.electronAPI.db.*)
+ * 3. Registers TYPED IPC handlers so the renderer process can query the
+ *    database through the preload bridge without ever executing raw SQL
+ *    (previously db:query/run/get/all exposed the entire database to any
+ *    code running in the renderer — see audit BLOCKER P1-2).
  */
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { ipcMain } from 'electron';
 import { LocalDB } from './local-db';
+import { handleValidated } from '../electron/ipc-validation';
+import type { UserPreferences, ChatMessage } from '../src/types';
 
 let localDB: LocalDB | null = null;
 
-// Schema inlined to avoid filesystem path issues in bundled builds.
-// The original lives in db/schema.sql for reference.
+// SCHEMA — the single source of truth.
+//
+// Inlined (not loaded from a .sql file) because filesystem paths differ
+// between dev and bundled builds, and the old schema.sql copy drifted
+// out of sync (audit finding P4-E-3).
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS persona_configs (
   id TEXT PRIMARY KEY,
@@ -156,34 +162,97 @@ export function getDatabase(): LocalDB {
 }
 
 /**
- * Register IPC handlers so the React renderer can run database queries
- * through the preload bridge. These map to window.electronAPI.db.* calls.
+ * Register typed IPC handlers for renderer access. Each handler wraps a
+ * specific LocalDB method — the renderer can never construct arbitrary SQL.
+ * All handlers enforce sender validation via `handleValidated`.
  */
 function registerIpcHandlers(localDB: LocalDB) {
   const { db } = localDB;
 
-  // db:run — for INSERT/UPDATE/DELETE statements
-  ipcMain.handle('db:run', (_event, sql: string, params?: unknown[]) => {
-    const stmt = db.prepare(sql);
-    return stmt.run(...(params ?? []));
+  // ── Chat ────────────────────────────────────────
+  // Get-or-create the latest session for a persona.
+  handleValidated('chat:getOrCreateSession', (_event, personaId: string) => {
+    const existing = localDB.getLatestChatSession(personaId);
+    if (existing) return { sessionId: existing.id };
+    const created = localDB.createChatSession(personaId);
+    return { sessionId: created.id };
   });
 
-  // db:get — returns a single row
-  ipcMain.handle('db:get', (_event, sql: string, params?: unknown[]) => {
-    const stmt = db.prepare(sql);
-    return stmt.get(...(params ?? []));
+  // Load all messages for a session (in chronological order).
+  handleValidated('chat:loadMessages', (_event, sessionId: string) => {
+    return localDB.getChatMessagesBySession(sessionId);
   });
 
-  // db:all — returns all matching rows
-  ipcMain.handle('db:all', (_event, sql: string, params?: unknown[]) => {
-    const stmt = db.prepare(sql);
-    return stmt.all(...(params ?? []));
+  // Insert a chat message (user or assistant).
+  handleValidated('chat:saveMessage', (_event, msg: Omit<ChatMessage, 'id' | 'createdAt'> & { id?: string }) => {
+    // If the caller provided a stable id (e.g. an assistant placeholder that
+    // was created optimistically during streaming), honor it. Otherwise let
+    // LocalDB generate one.
+    if (msg.id) {
+      db.prepare(`
+        INSERT INTO chat_messages (id, session_id, role, content, is_streaming, error, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        msg.id,
+        msg.sessionId,
+        msg.role,
+        msg.content,
+        msg.isStreaming ? 1 : 0,
+        msg.error ?? null,
+        new Date().toISOString(),
+      );
+      db.prepare('UPDATE chat_sessions SET updated_at = ? WHERE id = ?')
+        .run(new Date().toISOString(), msg.sessionId);
+      return { id: msg.id };
+    }
+    const saved = localDB.insertChatMessage(msg);
+    return { id: saved.id };
   });
 
-  // db:query — alias for db:all (kept for API compatibility)
-  ipcMain.handle('db:query', (_event, sql: string, params?: unknown[]) => {
-    const stmt = db.prepare(sql);
-    return stmt.all(...(params ?? []));
+  // Get the most recent message for a persona (for sidebar preview).
+  handleValidated('chat:getLastMessage', (_event, personaId: string) => {
+    const row = db.prepare(`
+      SELECT cm.content FROM chat_messages cm
+      JOIN chat_sessions cs ON cm.session_id = cs.id
+      WHERE cs.persona_id = ? ORDER BY cm.created_at DESC LIMIT 1
+    `).get(personaId) as { content: string } | undefined;
+    return row?.content ?? null;
+  });
+
+  // ── Sidebar (persona list with preview) ─────────
+  // Returns lightweight persona rows for the sidebar — no sensitive fields.
+  handleValidated('persona:sidebarList', () => {
+    const rows = db.prepare(`
+      SELECT id, name, settings FROM persona_configs
+      WHERE status = 'active' ORDER BY name ASC
+    `).all() as Array<{ id: string; name: string; settings: string | null }>;
+    return rows;
+  });
+
+  // Ensure at least one persona exists (called at app startup).
+  handleValidated('persona:ensureDefault', () => {
+    const existing = db.prepare(
+      `SELECT id FROM persona_configs WHERE status = 'active' LIMIT 1`,
+    ).get() as { id: string } | undefined;
+    if (existing) return { created: false };
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT OR IGNORE INTO persona_configs
+        (id, name, system_prompt, status, confirmation_level, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, 'Assistant', 'You are a helpful AI assistant.', 'active', 'balanced', now, now);
+    return { created: true, id };
+  });
+
+  // ── User preferences ────────────────────────────
+  handleValidated('prefs:load', () => {
+    // Single-user desktop app — always use the same row.
+    return localDB.getOrCreatePreferences('default');
+  });
+
+  handleValidated('prefs:save', (_event, updates: Partial<Omit<UserPreferences, 'id' | 'userId'>>) => {
+    return localDB.updatePreferences('default', updates);
   });
 }
 

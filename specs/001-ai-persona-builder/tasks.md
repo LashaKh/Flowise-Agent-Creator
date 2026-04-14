@@ -110,7 +110,7 @@ Phase 1 (Setup) ──┐
 
 - [X] T010 [P] Set Edge Function secrets via Supabase CLI
   ```bash
-  supabase secrets set FLOWISE_API_KEY="ijD+kfSjYMcqEyBHNCHyEaymDzrD7br4BW4/DRe/eYI="
+  supabase secrets set FLOWISE_API_KEY="<your-flowise-api-key>"
   supabase secrets set GEMINI_API_KEY="<key>"
   ```
 

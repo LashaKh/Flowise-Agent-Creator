@@ -1,10 +1,13 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { corsHeaders, handleCors } from '../_shared/cors.ts';
+import { corsHeaders, handleCors, corsHeadersFor } from '../_shared/cors.ts';
 import { createChatflow, deleteChatflow, updateChatflow, buildPredictionEndpoint } from '../_shared/flowise.ts';
+// Unused-import guard: corsHeaders is re-exported for compat; keep the binding.
+void corsHeaders;
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!;
 
 interface PersonaSettings {
   temperature?: number;
@@ -48,8 +51,14 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // Create Supabase client with user's auth
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    // Audit finding P3-F-2: use the anon key + user's JWT so Row-Level
+    // Security actually enforces access. Verified RLS policies exist on
+    // `personas` table checking `auth.uid() = user_id` for all 4 operations.
+    //
+    // Previously we used SUPABASE_SERVICE_ROLE_KEY which bypassed RLS
+    // entirely and relied on manual `.eq('user_id', ...)` filters. A single
+    // forgotten filter would have been a cross-user data leak.
+    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       global: { headers: { Authorization: authHeader } },
     });
 
@@ -182,7 +191,13 @@ async function handlePost(
   const trimmedName = name.trim();
   const permissions = body.permissions;
 
-  // Build insert data with optional permission fields
+  // Build insert data.
+  //
+  // Permissions are stored INSIDE the `settings` JSONB column because the
+  // personas table does not have dedicated permission columns. Earlier code
+  // was setting fields like `enabled_tools` directly on the row — Postgres
+  // silently dropped them on insert and user permission choices were lost
+  // (audit finding P2-4). All permission fields now round-trip via settings.
   const insertData: Record<string, unknown> = {
     user_id: userId,
     name: trimmedName,
@@ -193,13 +208,17 @@ async function handlePost(
   };
 
   if (permissions) {
-    if (permissions.enabledTools !== undefined) insertData.enabled_tools = permissions.enabledTools;
-    if (permissions.allowedPaths !== undefined) insertData.allowed_paths = permissions.allowedPaths;
-    if (permissions.confirmationLevel !== undefined) insertData.confirmation_level = permissions.confirmationLevel;
-    if (permissions.dangerousToolsEnabled !== undefined) insertData.dangerous_tools_enabled = permissions.dangerousToolsEnabled;
-    if (permissions.activityLogging !== undefined) insertData.activity_logging = permissions.activityLogging;
-    if (permissions.undoEnabled !== undefined) insertData.undo_enabled = permissions.undoEnabled;
-    if (permissions.sandboxEnabled !== undefined) insertData.sandbox_enabled = permissions.sandboxEnabled;
+    insertData.settings = {
+      permissions: {
+        enabledTools: permissions.enabledTools,
+        allowedPaths: permissions.allowedPaths,
+        confirmationLevel: permissions.confirmationLevel,
+        dangerousToolsEnabled: permissions.dangerousToolsEnabled,
+        activityLogging: permissions.activityLogging,
+        undoEnabled: permissions.undoEnabled,
+        sandboxEnabled: permissions.sandboxEnabled,
+      },
+    };
   }
 
   // Create persona record with 'creating' status
@@ -316,38 +335,24 @@ async function handlePatch(
     updates.system_prompt = body.systemPrompt;
   }
 
-  if (body.settings !== undefined) {
-    updates.settings = { ...currentPersona.settings, ...body.settings };
-  }
-
-  // Handle permission fields
+  // Merge settings (and permissions which live inside settings — audit P2-4).
+  const mergedSettings: Record<string, unknown> = {
+    ...(currentPersona.settings ?? {}),
+    ...(body.settings ?? {}),
+  };
   if (body.permissions) {
-    const p = body.permissions;
-    if (p.enabledTools !== undefined) updates.enabled_tools = p.enabledTools;
-    if (p.allowedPaths !== undefined) updates.allowed_paths = p.allowedPaths;
-    if (p.confirmationLevel !== undefined) updates.confirmation_level = p.confirmationLevel;
-    if (p.dangerousToolsEnabled !== undefined) updates.dangerous_tools_enabled = p.dangerousToolsEnabled;
-    if (p.activityLogging !== undefined) updates.activity_logging = p.activityLogging;
-    if (p.undoEnabled !== undefined) updates.undo_enabled = p.undoEnabled;
-    if (p.sandboxEnabled !== undefined) updates.sandbox_enabled = p.sandboxEnabled;
+    mergedSettings.permissions = {
+      ...((currentPersona.settings as Record<string, unknown>)?.permissions as Record<string, unknown> ?? {}),
+      ...body.permissions,
+    };
+  }
+  if (body.settings !== undefined || body.permissions !== undefined) {
+    updates.settings = mergedSettings;
   }
 
-  // Update Flowise chatflow if system prompt changed
-  if (updates.system_prompt) {
-    try {
-      const temperature = (updates.settings as PersonaSettings)?.temperature ||
-                         currentPersona.settings?.temperature || 0.7;
-      await updateChatflow(currentPersona.chatflow_id, updates.system_prompt as string, temperature);
-    } catch (error) {
-      console.error('Failed to update Flowise chatflow:', error);
-      return new Response(
-        JSON.stringify({ error: 'Failed to sync changes to Flowise' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-  }
-
-  // Update database
+  // Audit finding P3-F-1: update the database FIRST, then Flowise. If the
+  // Flowise update fails after the DB commit, revert the DB update so the
+  // two sources don't diverge.
   const { data, error } = await supabase
     .from('personas')
     .update(updates)
@@ -360,6 +365,29 @@ async function handlePatch(
       JSON.stringify({ error: 'Failed to update persona' }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
+  }
+
+  // Update Flowise chatflow if system prompt changed
+  if (updates.system_prompt) {
+    try {
+      const temperature = (mergedSettings as PersonaSettings)?.temperature ||
+                         currentPersona.settings?.temperature || 0.7;
+      await updateChatflow(currentPersona.chatflow_id, updates.system_prompt as string, temperature);
+    } catch (flowiseError) {
+      console.error('Failed to update Flowise chatflow:', flowiseError);
+      // Rollback the DB update so callers don't see stale data.
+      await supabase
+        .from('personas')
+        .update({
+          system_prompt: currentPersona.system_prompt,
+          settings: currentPersona.settings,
+        })
+        .eq('id', personaId);
+      return new Response(
+        JSON.stringify({ error: 'Failed to sync changes to Flowise (reverted)' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
   }
 
   return new Response(

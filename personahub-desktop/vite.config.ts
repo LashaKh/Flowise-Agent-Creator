@@ -17,7 +17,7 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron',
             rollupOptions: {
-              external: ['electron', 'better-sqlite3', 'electron-updater', 'ws', 'pdf-parse', 'mammoth'],
+              external: ['electron', 'better-sqlite3', 'electron-updater', 'ws', 'pdf-parse', 'mammoth', 'openclaw'],
             },
           },
         },

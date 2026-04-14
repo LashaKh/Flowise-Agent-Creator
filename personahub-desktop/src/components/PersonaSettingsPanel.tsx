@@ -1,18 +1,14 @@
 import { useState, useEffect } from 'react';
-import type { PersonaConfig, ConfirmationLevel, KnowledgeDocument, PathPermission } from '../types';
+import type { PersonaConfig, ConfirmationLevel, KnowledgeDocument, PathPermission, AvatarStyleId } from '../types';
+import VoicePicker from './VoicePicker';
+import FacePicker from './FacePicker';
+import Modal from './Modal';
+import ModelPicker from './ModelPicker';
 
 const EMOJI_OPTIONS = [
   '🤖', '👨‍⚕️', '👩‍💼', '👨‍🍳', '📚', '🎨', '🧑‍🔬', '💼',
   '🎵', '⚖️', '🏋️', '🌍', '🧠', '💡', '🔧', '🎭',
   '🐱', '🦊', '🌟', '🚀',
-];
-
-const MODEL_OPTIONS = [
-  { value: '', label: 'Default (from config)' },
-  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
-  { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-  { value: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
-  { value: 'claude-opus-4', label: 'Claude Opus 4' },
 ];
 
 const AVAILABLE_TOOLS: { name: string; label: string; tier: 'safe' | 'guarded' }[] = [
@@ -50,6 +46,10 @@ export default function PersonaSettingsPanel({
   const [allowedPaths, setAllowedPaths] = useState<PathPermission[]>([]);
   const [knowledgeDocs, setKnowledgeDocs] = useState<KnowledgeDocument[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  // Voice & Avatar state (audit finding P1-4 / P3-D-4)
+  const [voiceId, setVoiceId] = useState<string | undefined>(undefined);
+  const [avatarStyleId, setAvatarStyleId] = useState<AvatarStyleId>('face-warm');
+  const [avatarAccentHue, setAvatarAccentHue] = useState<number>(0);
 
   // Load persona data + knowledge docs on mount
   useEffect(() => {
@@ -65,6 +65,10 @@ export default function PersonaSettingsPanel({
       setAvatar(p.settings.avatar ?? '');
       setEnabledTools(p.enabledTools ?? []);
       setAllowedPaths(p.allowedPaths ?? []);
+      // Load voice/avatar settings from the settings JSONB blob
+      setVoiceId(p.settings.voiceId);
+      setAvatarStyleId((p.settings.avatarStyleId as AvatarStyleId) || 'face-warm');
+      setAvatarAccentHue(p.settings.avatarAccentHue ?? 0);
 
       const docs = await window.electronAPI.agent.listKnowledgeDocs(personaId);
       setKnowledgeDocs(docs);
@@ -84,7 +88,14 @@ export default function PersonaSettingsPanel({
         confirmationLevel,
         enabledTools,
         allowedPaths,
-        settings: { temperature, modelName: modelName || undefined, avatar: avatar || undefined },
+        settings: {
+          temperature,
+          modelName: modelName || undefined,
+          avatar: avatar || undefined,
+          voiceId,
+          avatarStyleId,
+          avatarAccentHue,
+        },
       });
       onSaved();
       onClose();
@@ -148,25 +159,34 @@ export default function PersonaSettingsPanel({
 
   if (!persona) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-        <div className="bg-gray-900 border border-gray-700 rounded-lg p-8">
-          <span className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin inline-block" />
-        </div>
-      </div>
+      <Modal
+        isOpen={true}
+        onClose={onClose}
+        className="bg-gray-900 border border-gray-700 rounded-lg p-8"
+      >
+        <span className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin inline-block" />
+      </Modal>
     );
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-gray-900 border border-gray-700 rounded-lg w-[520px] max-h-[90vh] overflow-y-auto shadow-xl">
+    <Modal
+      isOpen={true}
+      onClose={() => { if (!isSaving) onClose(); }}
+      labelledBy="edit-persona-title"
+      className="bg-gray-900 border border-gray-700 rounded-lg w-[520px] max-h-[90vh] overflow-y-auto shadow-xl"
+      closeOnBackdrop={!isSaving}
+    >
+      <>
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
-          <h3 className="text-base font-semibold text-white">Edit Persona</h3>
+          <h3 id="edit-persona-title" className="text-base font-semibold text-white">Edit Persona</h3>
           <button
             onClick={onClose}
-            className="text-gray-400 hover:text-white text-lg leading-none"
+            className="text-gray-400 hover:text-white text-xl leading-none w-8 h-8 flex items-center justify-center rounded hover:bg-gray-800"
+            aria-label="Close"
           >
-            x
+            ×
           </button>
         </div>
 
@@ -208,6 +228,28 @@ export default function PersonaSettingsPanel({
                   {emoji}
                 </button>
               ))}
+            </div>
+          </div>
+
+          {/* Voice & Avatar */}
+          <div className="border border-gray-800 rounded-lg p-3 space-y-3">
+            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Voice & Avatar</h3>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">Voice</label>
+              <VoicePicker
+                selectedVoiceId={voiceId}
+                personaName={persona?.name}
+                onChange={setVoiceId}
+              />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">Face style</label>
+              <FacePicker
+                selectedStyleId={avatarStyleId}
+                accentHue={avatarAccentHue}
+                onChange={setAvatarStyleId}
+                onHueChange={setAvatarAccentHue}
+              />
             </div>
           </div>
 
@@ -255,20 +297,10 @@ export default function PersonaSettingsPanel({
             </div>
           </div>
 
-          {/* Model */}
+          {/* Model picker — visual cards instead of dropdown */}
           <div>
-            <label className="block text-sm text-gray-400 mb-1">Model</label>
-            <select
-              value={modelName}
-              onChange={(e) => setModelName(e.target.value)}
-              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none"
-            >
-              {MODEL_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+            <label className="block text-sm text-gray-400 mb-2">Model</label>
+            <ModelPicker value={modelName} onChange={setModelName} />
           </div>
 
           {/* Confirmation Level */}
@@ -453,7 +485,7 @@ export default function PersonaSettingsPanel({
             )}
           </button>
         </div>
-      </div>
-    </div>
+      </>
+    </Modal>
   );
 }

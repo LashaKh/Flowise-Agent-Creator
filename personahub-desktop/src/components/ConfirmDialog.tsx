@@ -7,6 +7,7 @@
  */
 import { useState } from 'react';
 import type { ConfirmationRequest, ConfirmationResponse, ToolTier } from '../types';
+import Modal from './Modal';
 
 interface ConfirmDialogProps {
   request: ConfirmationRequest;
@@ -57,15 +58,21 @@ export default function ConfirmDialog({ request, onResponse }: ConfirmDialogProp
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-lg rounded-xl bg-gray-800 shadow-2xl border border-gray-700">
+    <Modal
+      isOpen={true}
+      onClose={handleDeny}
+      labelledBy="confirm-dialog-title"
+      className="w-full max-w-lg rounded-xl bg-gray-800 shadow-2xl border border-gray-700"
+      closeOnBackdrop={false}
+    >
+      <div>
         {/* Header */}
         <div className="flex items-center gap-3 border-b border-gray-700 px-6 py-4">
           <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gray-700 text-lg">
             {request.personaName.charAt(0).toUpperCase()}
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-gray-100">
+            <h2 id="confirm-dialog-title" className="text-lg font-semibold text-gray-100">
               {request.personaName}
             </h2>
             <span className={`text-sm ${TIER_COLORS[request.tier]}`}>
@@ -163,6 +170,6 @@ export default function ConfirmDialog({ request, onResponse }: ConfirmDialogProp
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

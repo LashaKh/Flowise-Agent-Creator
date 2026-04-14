@@ -212,11 +212,35 @@ export function useChat(chatflowId: string | null): UseChatReturn {
         // Create abort controller for this request
         abortControllerRef.current = new AbortController();
 
-        // Send message to Flowise with sessionId for memory
-        const response = await flowiseSendMessage(chatflowId, content, sessionIdRef.current);
+        // Send message to Flowise with sessionId for memory. Pass the
+        // abort signal so switching personas mid-stream actually cancels
+        // the HTTP request (audit finding P3-G-2).
+        const response = await flowiseSendMessage(
+          chatflowId,
+          content,
+          sessionIdRef.current,
+          abortControllerRef.current.signal,
+        );
 
-        // Stream the response
+        // Stream the response.
+        //
+        // Audit finding P4-D-2: previously every SSE chunk called setMessages
+        // which re-rendered the entire message list (~500 updates for a
+        // 500-token response). We now batch updates via requestAnimationFrame
+        // so React only re-renders at display refresh rate (~60 Hz).
         let fullContent = '';
+        let rafId: number | null = null;
+        let pendingContent = '';
+
+        const flushMessage = () => {
+          const content = pendingContent;
+          rafId = null;
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantMessageId ? { ...msg, content } : msg
+            )
+          );
+        };
 
         for await (const chunk of parseStream(response)) {
           // Check if request was aborted
@@ -225,22 +249,18 @@ export function useChat(chatflowId: string | null): UseChatReturn {
           }
 
           fullContent += chunk;
-
-          // Update assistant message with new content
-          setMessages(prev =>
-            prev.map(msg =>
-              msg.id === assistantMessageId
-                ? { ...msg, content: fullContent }
-                : msg
-            )
-          );
+          pendingContent = fullContent;
+          if (rafId === null) {
+            rafId = requestAnimationFrame(flushMessage);
+          }
         }
 
-        // Mark streaming as complete
-        setMessages(prev =>
-          prev.map(msg =>
+        // Final flush: cancel any pending rAF and write the complete content.
+        if (rafId !== null) cancelAnimationFrame(rafId);
+        setMessages((prev) =>
+          prev.map((msg) =>
             msg.id === assistantMessageId
-              ? { ...msg, isStreaming: false }
+              ? { ...msg, content: fullContent, isStreaming: false }
               : msg
           )
         );
@@ -327,7 +347,20 @@ export function useChat(chatflowId: string | null): UseChatReturn {
     // Reset retry counter for manual retry
     retryCountRef.current = 0;
 
-    await sendMessageInternal(lastFailedMessage, false);
+    // Clear the error marker on the previous failed user message so the UI
+    // doesn't keep showing a red X next to it, then retry with `isRetry=true`
+    // so `sendMessageInternal` reuses the existing message instead of
+    // appending a duplicate (audit finding P3-D-8).
+    setMessages((prev) =>
+      prev.map((msg, idx) =>
+        idx === prev.length - 1 && msg.role === 'user' && msg.error
+          ? { ...msg, error: undefined }
+          : msg
+      )
+    );
+    setError(null);
+
+    await sendMessageInternal(lastFailedMessage, true);
   }, [lastFailedMessage, sendMessageInternal]);
 
   // ============================================

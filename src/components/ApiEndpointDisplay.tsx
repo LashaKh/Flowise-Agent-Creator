@@ -19,11 +19,11 @@ print(response.json())`;
     <div className="space-y-4">
       {/* Chatflow ID */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">
+        <label className="block text-sm font-display font-medium text-gray-300 mb-1">
           Chatflow ID
         </label>
         <div className="flex items-center gap-2">
-          <code className="flex-1 px-3 py-2 bg-gray-100 rounded-md text-sm font-mono text-gray-800">
+          <code className="flex-1 px-3 py-2 glass border border-white/10 rounded-lg text-sm font-mono text-gray-200">
             {persona.chatflowId}
           </code>
           <CopyButton text={persona.chatflowId} />
@@ -32,11 +32,11 @@ print(response.json())`;
 
       {/* API Endpoint URL */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">
+        <label className="block text-sm font-display font-medium text-gray-300 mb-1">
           Prediction URL
         </label>
         <div className="flex items-center gap-2">
-          <code className="flex-1 px-3 py-2 bg-gray-100 rounded-md text-sm font-mono text-gray-800 break-all">
+          <code className="flex-1 px-3 py-2 glass border border-white/10 rounded-lg text-sm font-mono text-gray-200 break-all">
             {persona.apiEndpoint}
           </code>
           <CopyButton text={persona.apiEndpoint} />
@@ -46,7 +46,7 @@ print(response.json())`;
       {/* Python Code Snippet */}
       <div>
         <div className="flex items-center justify-between mb-1">
-          <label className="block text-sm font-medium text-gray-700">
+          <label className="block text-sm font-display font-medium text-gray-300">
             Python Example
           </label>
           <CopyButton text={pythonCode} label="Copy Code" />

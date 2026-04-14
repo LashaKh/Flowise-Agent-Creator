@@ -58,8 +58,29 @@ export function clearForPersona(personaId: string): void {
 
 /**
  * Get all current entries (for debugging or UI display).
+ * Backed by a raw query since LocalDB doesn't have a typed method yet.
  */
+interface PermissionRow {
+  id: string;
+  persona_id: string;
+  tool: string;
+  path_pattern: string;
+  permission: 'allow_always' | 'block_always';
+  expires_at: string | null;
+  created_at: string;
+}
+
 export function getAllEntries(): PermissionMemoryEntry[] {
-  // TODO: Add getAllPermissions to LocalDB
-  return [];
+  const rows = getDatabase().db
+    .prepare('SELECT * FROM permission_memory ORDER BY created_at DESC')
+    .all() as PermissionRow[];
+  return rows.map((row) => ({
+    id: row.id,
+    personaId: row.persona_id,
+    tool: row.tool,
+    pathPattern: row.path_pattern,
+    permission: row.permission,
+    expiresAt: row.expires_at ?? undefined,
+    createdAt: row.created_at,
+  }));
 }

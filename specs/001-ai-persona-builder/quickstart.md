@@ -49,7 +49,7 @@ supabase link --project-ref wlvfilxtvqjzwqjhfcdk
 
 ```bash
 # Flowise API Key
-supabase secrets set FLOWISE_API_KEY="ijD+kfSjYMcqEyBHNCHyEaymDzrD7br4BW4/DRe/eYI="
+supabase secrets set FLOWISE_API_KEY="<your-flowise-api-key>"
 
 # Gemini API Key (for prompt generation)
 supabase secrets set GEMINI_API_KEY="<your-gemini-api-key>"
@@ -156,7 +156,7 @@ Flowise_Agent_Builder/
 
 ```bash
 curl -X GET "https://flowise-2-0.onrender.com/api/v1/chatflows" \
-  -H "Authorization: Bearer ijD+kfSjYMcqEyBHNCHyEaymDzrD7br4BW4/DRe/eYI="
+  -H "Authorization: Bearer <your-flowise-api-key>"
 ```
 
 ### Test Chatflow Creation
@@ -164,7 +164,7 @@ curl -X GET "https://flowise-2-0.onrender.com/api/v1/chatflows" \
 ```bash
 # Use the reference flowdata to test
 curl -X POST "https://flowise-2-0.onrender.com/api/v1/chatflows" \
-  -H "Authorization: Bearer ijD+kfSjYMcqEyBHNCHyEaymDzrD7br4BW4/DRe/eYI=" \
+  -H "Authorization: Bearer <your-flowise-api-key>" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Test Persona",

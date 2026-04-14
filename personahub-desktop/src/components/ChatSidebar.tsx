@@ -107,9 +107,16 @@ export default function ChatSidebar({
     setError('');
 
     try {
+      // Pick up the user's global default-model preference (set in Settings)
+      const defaultModelId = (() => {
+        try { return localStorage.getItem('personahub:defaultModelId') || undefined; }
+        catch { return undefined; }
+      })();
+
       const result = await window.electronAPI.agent.createPersona(name, desc, {
         temperature,
         confirmationLevel,
+        modelName: defaultModelId,
       });
 
       closeModal();

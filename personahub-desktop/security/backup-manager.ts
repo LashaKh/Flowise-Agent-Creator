@@ -142,11 +142,42 @@ export function cleanup(
 }
 
 /**
- * Get all backup records.
+ * Get all backup records. Optionally filter by persona via a join through
+ * action_log_entries.
  */
-export function getRecords(_personaId?: string): BackupRecord[] {
-  // TODO: BackupRecord doesn't have personaId — would need a join through action_log_entries
-  return [];
+interface BackupRow {
+  id: string;
+  action_log_id: string;
+  original_path: string;
+  backup_path: string;
+  action_type: string;
+  file_existed: number;
+  undone: number;
+  undone_at: string | null;
+  created_at: string;
+}
+
+export function getRecords(personaId?: string): BackupRecord[] {
+  const db = getDatabase().db;
+  const rows = personaId
+    ? (db.prepare(`
+        SELECT br.* FROM backup_records br
+        JOIN action_log_entries ale ON br.action_log_id = ale.id
+        WHERE ale.persona_id = ?
+        ORDER BY br.created_at DESC
+      `).all(personaId) as BackupRow[])
+    : (db.prepare('SELECT * FROM backup_records ORDER BY created_at DESC').all() as BackupRow[]);
+  return rows.map((row) => ({
+    id: row.id,
+    actionLogId: row.action_log_id,
+    originalPath: row.original_path,
+    backupPath: row.backup_path,
+    actionType: row.action_type as BackupRecord['actionType'],
+    fileExisted: row.file_existed === 1,
+    undone: row.undone === 1,
+    undoneAt: row.undone_at ?? undefined,
+    createdAt: row.created_at,
+  }));
 }
 
 // ─── Helpers ───────────────────────────────────

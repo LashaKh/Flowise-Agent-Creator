@@ -17,20 +17,29 @@ const electronAPI = {
     storeToken: (token: string) => ipcRenderer.invoke('auth:storeToken', token),
     clearToken: () => ipcRenderer.invoke('auth:clearToken'),
     onCallback: (callback: (result: unknown) => void) => {
-      ipcRenderer.on('auth:callback', (_e, result) => callback(result));
+      const handler = (_e: Electron.IpcRendererEvent, result: unknown) => callback(result);
+      ipcRenderer.on('auth:callback', handler);
+      return () => ipcRenderer.removeListener('auth:callback', handler);
     },
   },
 
-  // ─── Database ────────────────────────────────
-  db: {
-    query: (sql: string, params?: unknown[]) =>
-      ipcRenderer.invoke('db:query', sql, params),
-    run: (sql: string, params?: unknown[]) =>
-      ipcRenderer.invoke('db:run', sql, params),
-    get: (sql: string, params?: unknown[]) =>
-      ipcRenderer.invoke('db:get', sql, params),
-    all: (sql: string, params?: unknown[]) =>
-      ipcRenderer.invoke('db:all', sql, params),
+  // ─── Chat (typed replacements for raw SQL) ───────
+  chat: {
+    getOrCreateSession: (personaId: string) =>
+      ipcRenderer.invoke('chat:getOrCreateSession', personaId),
+    loadMessages: (sessionId: string) =>
+      ipcRenderer.invoke('chat:loadMessages', sessionId),
+    saveMessage: (msg: Record<string, unknown>) =>
+      ipcRenderer.invoke('chat:saveMessage', msg),
+    getLastMessage: (personaId: string) =>
+      ipcRenderer.invoke('chat:getLastMessage', personaId),
+  },
+
+  // ─── Preferences ─────────────────────────────
+  prefs: {
+    load: () => ipcRenderer.invoke('prefs:load'),
+    save: (updates: Record<string, unknown>) =>
+      ipcRenderer.invoke('prefs:save', updates),
   },
 
   // ─── Security ────────────────────────────────
@@ -40,7 +49,9 @@ const electronAPI = {
     confirmAction: (requestId: string, response: unknown) =>
       ipcRenderer.invoke('security:confirm', requestId, response),
     onConfirmRequest: (callback: (request: unknown) => void) => {
-      ipcRenderer.on('security:confirmRequest', (_e, req) => callback(req));
+      const handler = (_e: Electron.IpcRendererEvent, req: unknown) => callback(req);
+      ipcRenderer.on('security:confirmRequest', handler);
+      return () => ipcRenderer.removeListener('security:confirmRequest', handler);
     },
   },
 
@@ -48,9 +59,11 @@ const electronAPI = {
   agent: {
     sendMessage: (personaId: string, message: string) =>
       ipcRenderer.invoke('agent:send', personaId, message),
-    createPersona: (name: string, description: string, options?: { temperature?: number; confirmationLevel?: string }) =>
+    createPersona: (name: string, description: string, options?: { temperature?: number; confirmationLevel?: string; modelName?: string }) =>
       ipcRenderer.invoke('persona:create', name, description, options),
     listPersonas: () => ipcRenderer.invoke('persona:list'),
+    sidebarList: () => ipcRenderer.invoke('persona:sidebarList'),
+    ensureDefault: () => ipcRenderer.invoke('persona:ensureDefault'),
     getPersona: (id: string) => ipcRenderer.invoke('persona:get', id),
     updatePersona: (id: string, updates: Record<string, unknown>) =>
       ipcRenderer.invoke('persona:update', id, updates),
@@ -62,10 +75,14 @@ const electronAPI = {
     importPersona: (json: string) => ipcRenderer.invoke('persona:import', json),
     getStats: (personaId: string) => ipcRenderer.invoke('persona:stats', personaId),
     onResponse: (callback: (chunk: unknown) => void) => {
-      ipcRenderer.on('agent:response', (_e, chunk) => callback(chunk));
+      const handler = (_e: Electron.IpcRendererEvent, chunk: unknown) => callback(chunk);
+      ipcRenderer.on('agent:response', handler);
+      return () => ipcRenderer.removeListener('agent:response', handler);
     },
     onToolCall: (callback: (toolCall: unknown) => void) => {
-      ipcRenderer.on('agent:toolCall', (_e, toolCall) => callback(toolCall));
+      const handler = (_e: Electron.IpcRendererEvent, toolCall: unknown) => callback(toolCall);
+      ipcRenderer.on('agent:toolCall', handler);
+      return () => ipcRenderer.removeListener('agent:toolCall', handler);
     },
     stopGeneration: (personaId: string) =>
       ipcRenderer.invoke('agent:stop', personaId),
@@ -81,10 +98,14 @@ const electronAPI = {
   sync: {
     syncNow: () => ipcRenderer.invoke('sync:now'),
     onSyncComplete: (callback: (result: unknown) => void) => {
-      ipcRenderer.on('sync:complete', (_e, result) => callback(result));
+      const handler = (_e: Electron.IpcRendererEvent, result: unknown) => callback(result);
+      ipcRenderer.on('sync:complete', handler);
+      return () => ipcRenderer.removeListener('sync:complete', handler);
     },
     onPermissionEscalation: (callback: (escalation: unknown) => void) => {
-      ipcRenderer.on('sync:permissionEscalation', (_e, esc) => callback(esc));
+      const handler = (_e: Electron.IpcRendererEvent, esc: unknown) => callback(esc);
+      ipcRenderer.on('sync:permissionEscalation', handler);
+      return () => ipcRenderer.removeListener('sync:permissionEscalation', handler);
     },
   },
 
@@ -99,9 +120,38 @@ const electronAPI = {
   openclaw: {
     checkInstalled: () => ipcRenderer.invoke('openclaw:checkInstalled'),
     install: (apiKey: string, provider: string) => ipcRenderer.invoke('openclaw:install', apiKey, provider),
-    onProgress: (cb: (pct: number) => void) => {
-      ipcRenderer.on('openclaw:progress', (_e, pct) => cb(pct));
-    },
+  },
+
+  // ─── Voice & Avatar TTS ──────────────────────
+  tts: {
+    synthesize: (text: string, voiceId: string, provider: string, personaId: string) =>
+      ipcRenderer.invoke('tts:synthesize', text, voiceId, provider, personaId),
+  },
+
+  // ─── Speech-to-Text ────────────────────────
+  stt: {
+    transcribe: (audio: ArrayBuffer, mimeType: string) =>
+      ipcRenderer.invoke('stt:transcribe', audio, mimeType),
+  },
+
+  voice: {
+    storeKey: (providerId: string, apiKey: string) =>
+      ipcRenderer.invoke('voice:storeKey', providerId, apiKey),
+    getKey: (providerId: string) =>
+      ipcRenderer.invoke('voice:getKey', providerId),
+    hasKey: (providerId: string) =>
+      ipcRenderer.invoke('voice:hasKey', providerId),
+    deleteKey: (providerId: string) =>
+      ipcRenderer.invoke('voice:deleteKey', providerId),
+    getPrefs: () => ipcRenderer.invoke('voice:getPrefs'),
+    setPrefs: (prefs: Record<string, unknown>) =>
+      ipcRenderer.invoke('voice:setPrefs', prefs),
+    runDiagnostics: () => ipcRenderer.invoke('voice:diagnostics'),
+  },
+
+  // ─── LLM Usage Stats ─────────────────────────
+  llm: {
+    getUsage: () => ipcRenderer.invoke('llm:getUsage'),
   },
 
   // ─── Window ──────────────────────────────────
@@ -122,12 +172,21 @@ const electronAPI = {
     check: () => ipcRenderer.invoke('updater:check'),
     install: () => ipcRenderer.invoke('updater:install'),
     onStatus: (callback: (status: unknown) => void) => {
-      ipcRenderer.on('updater:status', (_e, status) => callback(status));
+      const handler = (_e: Electron.IpcRendererEvent, status: unknown) => callback(status);
+      ipcRenderer.on('updater:status', handler);
+      return () => ipcRenderer.removeListener('updater:status', handler);
     },
   },
 };
 
 // Expose to renderer as window.electronAPI
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);
+
+// Bridge power monitor events (lock-screen / suspend) from the main process
+// to DOM events the renderer can listen for. Without this bridge the
+// useVoiceInput hook's `window.addEventListener('power:lock')` listeners
+// never fire and the microphone stays active during sleep (audit P3-D-5).
+ipcRenderer.on('power:lock', () => window.dispatchEvent(new Event('power:lock')));
+ipcRenderer.on('power:suspend', () => window.dispatchEvent(new Event('power:suspend')));
 
 export type ElectronAPI = typeof electronAPI;

@@ -550,12 +550,18 @@ export interface ChatMessage {
 /**
  * Send a prediction request to Flowise
  * Returns a ReadableStream for SSE streaming responses
+ *
+ * Accepts an optional AbortSignal so callers can cancel in-flight requests
+ * when the user switches personas or unmounts the chat (audit finding
+ * P3-G-2). Without threading the signal, the browser kept the HTTP request
+ * open until natural completion even after `abort()` was called.
  */
 export async function sendPrediction(
   chatflowId: string,
   question: string,
   streaming: boolean = true,
-  sessionId?: string
+  sessionId?: string,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const endpoint = buildPredictionEndpoint(chatflowId);
 
@@ -575,6 +581,7 @@ export async function sendPrediction(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
+    signal,
   });
 }
 

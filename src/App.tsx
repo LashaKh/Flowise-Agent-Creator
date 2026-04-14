@@ -35,8 +35,16 @@ function App() {
   const [deleteTarget, setDeleteTarget] = useState<Persona | null>(null);
 
   // Hooks
-  const { personas, isLoading: isPersonasLoading, refetch } = usePersonas();
+  const { personas, isLoading: isPersonasLoading, error: personasError, refetch } = usePersonas();
   const { deletePersona } = useDeletePersona();
+
+  // Audit finding P4-B-4: surface fetch failures to the user via toast so
+  // they don't see an empty persona list when the network dropped.
+  useEffect(() => {
+    if (personasError) {
+      toast.error(`Failed to load personas: ${personasError}`, { id: 'personas-error' });
+    }
+  }, [personasError]);
 
   // Check authentication state on mount
   useEffect(() => {
@@ -144,7 +152,20 @@ function App() {
   if (!session) {
     return (
       <ErrorBoundary>
-        <Toaster position="top-right" />
+        <Toaster
+          position="top-right"
+          toastOptions={{
+            style: {
+              background: 'rgba(17, 17, 34, 0.95)',
+              color: '#fff',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              backdropFilter: 'blur(10px)',
+              fontFamily: 'inherit',
+            },
+            success: { iconTheme: { primary: '#06b6d4', secondary: '#0a0a14' } },
+            error: { iconTheme: { primary: '#ef4444', secondary: '#0a0a14' } },
+          }}
+        />
         <Auth />
       </ErrorBoundary>
     );
@@ -154,7 +175,20 @@ function App() {
   return (
     <ErrorBoundary>
       <div className="min-h-screen cosmic-bg">
-        <Toaster position="top-right" />
+        <Toaster
+          position="top-right"
+          toastOptions={{
+            style: {
+              background: 'rgba(17, 17, 34, 0.95)',
+              color: '#fff',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              backdropFilter: 'blur(10px)',
+              fontFamily: 'inherit',
+            },
+            success: { iconTheme: { primary: '#06b6d4', secondary: '#0a0a14' } },
+            error: { iconTheme: { primary: '#ef4444', secondary: '#0a0a14' } },
+          }}
+        />
 
         {/* Header */}
         <header className="relative overflow-hidden header-premium">

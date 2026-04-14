@@ -25,13 +25,16 @@ export const TOOL_CLASSIFICATIONS: ToolClassification[] = [
   // Guarded — requires user confirmation
   { tool: 'write', tier: 'guarded', description: 'Write/create files' },
   { tool: 'edit', tier: 'guarded', description: 'Modify existing files' },
-  { tool: 'exec', tier: 'guarded', description: 'Run shell commands' },
   { tool: 'browser.click', tier: 'guarded', description: 'Click web elements' },
   { tool: 'browser.type', tier: 'guarded', description: 'Type into web forms' },
   { tool: 'email.send', tier: 'guarded', description: 'Send emails' },
   { tool: 'calendar.create', tier: 'guarded', description: 'Create calendar events' },
 
   // Dangerous — requires explicit enable + confirmation
+  // `exec` was moved from guarded → dangerous (audit finding P3-B-1) because
+  // shell commands can do arbitrary things. Even in relaxed mode, `exec`
+  // must now go through the dangerous path (explicit opt-in + confirmation).
+  { tool: 'exec', tier: 'dangerous', description: 'Run shell commands' },
   { tool: 'delete', tier: 'dangerous', description: 'Delete files' },
   { tool: 'exec.sudo', tier: 'dangerous', description: 'Run as administrator' },
   { tool: 'system.shutdown', tier: 'dangerous', description: 'System control' },
@@ -48,6 +51,16 @@ export const BLOCKED_PATH_PATTERNS: string[] = [
   '~/.config/gcloud',
   '~/Library/Keychains',
   '~/.password-store',
+  // Audit finding P3-B-2: `.env` is the most common secret storage file
+  // in developer projects and was NOT previously blocked.
+  '**/.env',
+  '**/.env.*',
+  '~/.docker',
+  '~/.kube',
+  '~/.npmrc',
+  '~/.pypirc',
+  '~/.netrc',
+  '~/.config/gh',
   '**/node_modules',
   '**/.git',
   '**/passwords*',

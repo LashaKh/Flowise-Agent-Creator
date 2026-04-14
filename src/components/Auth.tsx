@@ -245,7 +245,7 @@ export function Auth() {
                 type="button"
                 onClick={toggleMode}
                 disabled={isLoading}
-                className="text-cosmic-cyan hover:text-cosmic-magenta font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="inline-flex items-center justify-center min-h-[32px] px-2 text-cosmic-cyan hover:text-cosmic-magenta font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 {mode === 'signin' ? 'Sign up' : 'Sign in'}
               </button>
