@@ -3,6 +3,10 @@ import toast from 'react-hot-toast';
 import type { UserPreferences, GlobalVoicePrefs, VoiceProvider, AvatarStyleId } from '../types';
 import { clearAllSessionCache } from '../hooks/useChat';
 import UsagePanel from './UsagePanel';
+import ModelPicker from './ModelPicker';
+import { DEFAULT_MODEL_ID, getModelById } from '../constants/models';
+
+const DEFAULT_MODEL_STORAGE_KEY = 'personahub:defaultModelId';
 
 const DEFAULT_PREFS: UserPreferences = {
   id: '',
@@ -15,10 +19,23 @@ const DEFAULT_PREFS: UserPreferences = {
   maxBackups: 100,
 };
 
+type TabId = 'general' | 'ai' | 'voice' | 'advanced';
+
 export default function Settings() {
   const [prefs, setPrefs] = useState<UserPreferences>(DEFAULT_PREFS);
   const [appVersion, setAppVersion] = useState('');
   const [saved, setSaved] = useState(false);
+  const [activeTab, setActiveTab] = useState<TabId>('general');
+
+  // Default-model preference (stored in localStorage — read by ChatSidebar
+  // when creating new personas so they inherit this choice).
+  const [defaultModelId, setDefaultModelId] = useState<string>(() => {
+    try {
+      return localStorage.getItem(DEFAULT_MODEL_STORAGE_KEY) || DEFAULT_MODEL_ID;
+    } catch {
+      return DEFAULT_MODEL_ID;
+    }
+  });
 
   // Voice & Avatar state
   const [voicePrefs, setVoicePrefs] = useState<GlobalVoicePrefs>({
@@ -45,7 +62,6 @@ export default function Settings() {
     try {
       const vp = await window.electronAPI.voice.getPrefs();
       setVoicePrefs(vp);
-      // Check which providers have keys (typed hasKey — returns boolean, not the key)
       for (const provider of ['cloud-openai', 'cloud-elevenlabs', 'cloud-google'] as const) {
         const present = await window.electronAPI.voice.hasKey(provider);
         setVoiceKeyStatus((prev) => ({ ...prev, [provider]: present }));
@@ -60,8 +76,7 @@ export default function Settings() {
     setVoicePrefs(updated);
     try {
       await window.electronAPI.voice.setPrefs(updates);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      flashSaved();
     } catch (err) {
       console.error('[Settings] Failed to save voice prefs:', err);
     }
@@ -78,7 +93,6 @@ export default function Settings() {
 
   async function savePrefs(updated: UserPreferences) {
     setPrefs(updated);
-    setSaved(false);
     try {
       await window.electronAPI.prefs.save({
         globalKeyboardShortcut: updated.globalKeyboardShortcut,
@@ -88,17 +102,29 @@ export default function Settings() {
         backupRetentionDays: updated.backupRetentionDays,
         maxBackups: updated.maxBackups,
       });
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      flashSaved();
     } catch (err) {
       console.error('[Settings] Failed to save preferences:', err);
     }
   }
 
+  function flashSaved() {
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  }
+
+  function saveDefaultModel(modelId: string) {
+    setDefaultModelId(modelId);
+    try {
+      localStorage.setItem(DEFAULT_MODEL_STORAGE_KEY, modelId);
+      flashSaved();
+    } catch (err) {
+      console.warn('[Settings] Failed to save default model:', err);
+    }
+  }
+
   const handleSignOut = async () => {
     try {
-      // Clear the chat session cache first so stale session IDs don't leak
-      // across users if a different user signs in next (audit P4-E-4).
       clearAllSessionCache();
       await window.electronAPI.auth.logout();
       window.location.reload();
@@ -108,317 +134,376 @@ export default function Settings() {
     }
   };
 
+  const currentDefaultModel = getModelById(defaultModelId);
+
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="max-w-xl mx-auto p-6 space-y-6">
-        <h1 className="text-xl font-semibold text-white">Settings</h1>
+    <div className="h-full overflow-y-auto bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950">
+      <div className="max-w-6xl mx-auto px-6 py-8">
+        {/* Header */}
+        <header className="mb-6">
+          <h1 className="text-2xl font-semibold text-white tracking-tight">Settings</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            Personalize PersonaHub — appearance, AI models, voice, and data.
+          </p>
+        </header>
 
-        {/* Theme */}
-        <Section title="Appearance">
-          <label className="text-sm text-gray-400 mb-2 block">Theme</label>
-          <div className="flex gap-2">
-            {(['light', 'dark', 'system'] as const).map((t) => (
-              <button
-                key={t}
-                onClick={() => savePrefs({ ...prefs, theme: t })}
-                className={`px-4 py-2 rounded-lg text-sm font-medium capitalize transition-colors ${
-                  prefs.theme === t
-                    ? 'bg-indigo-600 text-white'
-                    : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-                }`}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
-        </Section>
+        {/* Tab navigation */}
+        <nav className="flex gap-1 border-b border-gray-800 mb-6 overflow-x-auto">
+          {[
+            { id: 'general' as TabId, label: 'General', icon: '⚙' },
+            { id: 'ai' as TabId, label: 'AI & Models', icon: '✨' },
+            { id: 'voice' as TabId, label: 'Voice & Avatar', icon: '🎙' },
+            { id: 'advanced' as TabId, label: 'Advanced', icon: '🛠' },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`relative px-4 py-2.5 text-sm font-medium transition-colors whitespace-nowrap
+                ${activeTab === tab.id ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`}
+            >
+              <span className="mr-1.5 opacity-70">{tab.icon}</span>
+              {tab.label}
+              {activeTab === tab.id && (
+                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-500 rounded-t" />
+              )}
+            </button>
+          ))}
+        </nav>
 
-        {/* Keyboard shortcut */}
-        <Section title="Keyboard Shortcut">
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-400">Global shortcut</span>
-            <kbd className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-gray-300 font-mono">
-              {prefs.globalKeyboardShortcut}
-            </kbd>
-          </div>
-        </Section>
-
-        {/* Toggles */}
-        <Section title="General">
-          <ToggleRow
-            label="Start on login"
-            description="Launch PersonaHub when your computer starts"
-            checked={prefs.startOnLogin}
-            onChange={(v) => savePrefs({ ...prefs, startOnLogin: v })}
-          />
-          <ToggleRow
-            label="Notifications"
-            description="Show desktop notifications for persona activity"
-            checked={prefs.notificationsEnabled}
-            onChange={(v) => savePrefs({ ...prefs, notificationsEnabled: v })}
-          />
-        </Section>
-
-        {/* AI Usage — cost dashboard for OpenRouter spend */}
-        <Section title="AI Usage">
-          <UsagePanel />
-        </Section>
-
-        {/* Backup config */}
-        <Section title="Backups">
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <span className="text-sm text-white block">Retention</span>
-                <span className="text-xs text-gray-500">Days to keep backups</span>
-              </div>
-              <input
-                type="number"
-                min={1}
-                max={365}
-                value={prefs.backupRetentionDays}
-                onChange={(e) =>
-                  savePrefs({ ...prefs, backupRetentionDays: Math.max(1, parseInt(e.target.value) || 30) })
-                }
-                className="w-20 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white text-right focus:border-indigo-500 focus:outline-none"
-              />
-            </div>
-            <div className="flex items-center justify-between">
-              <div>
-                <span className="text-sm text-white block">Max backups</span>
-                <span className="text-xs text-gray-500">Maximum number of backups to keep</span>
-              </div>
-              <input
-                type="number"
-                min={10}
-                max={10000}
-                value={prefs.maxBackups}
-                onChange={(e) =>
-                  savePrefs({ ...prefs, maxBackups: Math.max(10, parseInt(e.target.value) || 100) })
-                }
-                className="w-20 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white text-right focus:border-indigo-500 focus:outline-none"
-              />
-            </div>
-          </div>
-        </Section>
-
-        {/* Voice & Avatar */}
-        <CollapsibleSection title="Voice & Avatar" defaultOpen={false}>
-          {/* Output */}
-          <ToggleRow
-            label="Voice output"
-            description="Personas speak their replies aloud"
-            checked={voicePrefs.voiceOutputEnabled}
-            onChange={(v) => saveVoicePrefs({ voiceOutputEnabled: v })}
-          />
-          {voicePrefs.voiceOutputEnabled && (
-            <div className="space-y-3 pl-2 border-l-2 border-gray-800 ml-2">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-400">Default provider</span>
-                <select
-                  value={voicePrefs.defaultProvider}
-                  onChange={(e) => saveVoicePrefs({ defaultProvider: e.target.value as VoiceProvider })}
-                  className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:border-indigo-500 focus:outline-none"
-                >
-                  <option value="os-native">OS Native (free)</option>
-                  <option value="cloud-openai">OpenAI TTS</option>
-                  <option value="cloud-elevenlabs">ElevenLabs</option>
-                  <option value="cloud-google">Google TTS</option>
-                  <option value="auto">Auto (best available)</option>
-                </select>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-400">Voice speed</span>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="range"
-                    min="0.5"
-                    max="2.0"
-                    step="0.1"
-                    value={voicePrefs.defaultSpeed ?? 1.0}
-                    className="w-24"
-                    onChange={(e) => saveVoicePrefs({ defaultSpeed: parseFloat(e.target.value) })}
-                  />
-                  <span className="text-xs text-gray-500 w-8">
-                    {(voicePrefs.defaultSpeed ?? 1.0).toFixed(1)}x
-                  </span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Captions */}
-          <ToggleRow
-            label="Captions"
-            description="Show text captions below the avatar"
-            checked={voicePrefs.captionsEnabled}
-            onChange={(v) => saveVoicePrefs({ captionsEnabled: v })}
-          />
-
-          {/* Face */}
-          <ToggleRow
-            label="Avatar face"
-            description="Show animated 2D face for each persona"
-            checked={voicePrefs.featureFlag}
-            onChange={(v) => saveVoicePrefs({ featureFlag: v })}
-          />
-          {voicePrefs.featureFlag && (
-            <div className="pl-2 border-l-2 border-gray-800 ml-2">
-              <label className="text-xs text-gray-500 block mb-2">Default style</label>
+        {/* ─── General tab ─── */}
+        {activeTab === 'general' && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <Card title="Appearance" icon="🎨">
+              <Label>Theme</Label>
               <div className="grid grid-cols-3 gap-2">
-                {(['face-warm', 'face-cool', 'face-playful', 'face-serious', 'face-gentle', 'face-bold'] as AvatarStyleId[]).map((s) => (
+                {(['light', 'dark', 'system'] as const).map((t) => (
                   <button
-                    key={s}
-                    onClick={() => saveVoicePrefs({ defaultAvatarStyle: s })}
-                    className={`px-2 py-1.5 rounded text-xs capitalize transition-colors ${
-                      voicePrefs.defaultAvatarStyle === s
-                        ? 'bg-indigo-600 text-white ring-2 ring-indigo-400'
-                        : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-                    }`}
+                    key={t}
+                    onClick={() => savePrefs({ ...prefs, theme: t })}
+                    className={`px-3 py-2.5 rounded-lg text-sm font-medium capitalize transition-all border
+                      ${prefs.theme === t
+                        ? 'bg-indigo-600 text-white border-indigo-500 shadow-lg shadow-indigo-900/30'
+                        : 'bg-gray-800/60 text-gray-400 border-gray-700 hover:bg-gray-800 hover:border-gray-600'
+                      }`}
                   >
-                    {s.replace('face-', '')}
+                    {t}
                   </button>
                 ))}
               </div>
-            </div>
-          )}
+            </Card>
 
-          {/* Providers & Keys */}
-          <div className="pt-2 border-t border-gray-800 mt-2">
-            <h3 className="text-xs font-semibold text-gray-500 mb-2 uppercase tracking-wider">API Keys</h3>
-            {(['cloud-openai', 'cloud-elevenlabs', 'cloud-google'] as const).map((provider) => (
-              <div key={provider} className="flex items-center justify-between py-1.5">
+            <Card title="Keyboard Shortcut" icon="⌨">
+              <div className="flex items-center justify-between h-full">
                 <div>
-                  <span className="text-sm text-white block capitalize">
-                    {provider.replace('cloud-', '')}
-                  </span>
-                  <span className="text-xs text-gray-500">
-                    {voiceKeyStatus[provider] ? '● Key stored' : '○ No key'}
-                  </span>
+                  <div className="text-sm text-white">Global toggle</div>
+                  <div className="text-xs text-gray-500">Show/hide PersonaHub anywhere</div>
                 </div>
-                <button
-                  onClick={async () => {
-                    if (voiceKeyStatus[provider]) {
-                      await window.electronAPI.voice.deleteKey(provider);
-                      setVoiceKeyStatus((prev) => ({ ...prev, [provider]: false }));
-                    } else {
-                      const key = prompt(`Enter ${provider.replace('cloud-', '')} API key:`);
-                      if (key) {
-                        await window.electronAPI.voice.storeKey(provider, key);
-                        setVoiceKeyStatus((prev) => ({ ...prev, [provider]: true }));
-                      }
-                    }
-                  }}
-                  className={`px-3 py-1 rounded text-xs transition-colors ${
-                    voiceKeyStatus[provider]
-                      ? 'text-red-400 hover:bg-red-900/20'
-                      : 'text-indigo-400 hover:bg-indigo-900/20'
-                  }`}
-                >
-                  {voiceKeyStatus[provider] ? 'Remove' : 'Add key'}
-                </button>
+                <kbd className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-md text-xs text-gray-200 font-mono shadow-inner">
+                  {prefs.globalKeyboardShortcut}
+                </kbd>
               </div>
-            ))}
+            </Card>
+
+            <Card title="Startup" icon="🚀">
+              <ToggleRow
+                label="Start on login"
+                description="Launch PersonaHub when your computer starts"
+                checked={prefs.startOnLogin}
+                onChange={(v) => savePrefs({ ...prefs, startOnLogin: v })}
+              />
+              <ToggleRow
+                label="Notifications"
+                description="Show desktop notifications for persona activity"
+                checked={prefs.notificationsEnabled}
+                onChange={(v) => savePrefs({ ...prefs, notificationsEnabled: v })}
+              />
+            </Card>
+
+            <Card title="Account" icon="👤" variant="danger">
+              <p className="text-xs text-gray-500 mb-3">
+                Signing out clears your session. Personas stay on this device.
+              </p>
+              <button
+                onClick={handleSignOut}
+                className="w-full py-2.5 border border-red-800/60 bg-red-950/20 text-red-400 rounded-lg text-sm font-medium hover:bg-red-900/30 hover:border-red-700 transition-colors"
+              >
+                Sign Out
+              </button>
+            </Card>
           </div>
+        )}
 
-          {/* Privacy */}
-          <div className="pt-2 border-t border-gray-800 mt-2">
-            <ToggleRow
-              label="Local-only mode"
-              description="Never send voice data to cloud providers"
-              checked={voicePrefs.localOnlyMode}
-              onChange={(v) => saveVoicePrefs({ localOnlyMode: v })}
-            />
-            <ToggleRow
-              label="Auto-stop on blur"
-              description="Stop mic when app loses focus"
-              checked={voicePrefs.autoStopOnBlur}
-              onChange={(v) => saveVoicePrefs({ autoStopOnBlur: v })}
-            />
-            <p className="text-xs text-gray-600 mt-2">
-              Voice audio is never saved to disk. Transcriptions are discarded after insertion.
-              API keys are stored in your OS secure credential store.
-            </p>
+        {/* ─── AI & Models tab ─── */}
+        {activeTab === 'ai' && (
+          <div className="space-y-4">
+            <Card title="Usage This Month" icon="📊" accent>
+              <UsagePanel />
+            </Card>
+
+            <Card title="Default AI Model" icon="✨">
+              <p className="text-xs text-gray-500 mb-3 leading-relaxed">
+                Used for all newly created personas. You can always change the model per-persona
+                by clicking the pencil icon on any persona in the sidebar.
+              </p>
+
+              {currentDefaultModel && (
+                <div className="mb-4 p-3 bg-indigo-950/30 border border-indigo-800/40 rounded-lg flex items-center gap-3">
+                  <span className="text-2xl">{currentDefaultModel.emoji}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-white">
+                      Currently: {currentDefaultModel.label}
+                    </div>
+                    <div className="text-xs text-gray-400 truncate">
+                      {currentDefaultModel.tagline}
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-bold text-indigo-400 shrink-0">DEFAULT</span>
+                </div>
+              )}
+
+              <ModelPicker value={defaultModelId} onChange={saveDefaultModel} />
+            </Card>
           </div>
+        )}
 
-          {/* Diagnostics */}
-          <button
-            onClick={async () => {
-              try {
-                const results = await window.electronAPI.voice.runDiagnostics();
-                toast.success(results.map((r: { stage: string; status: string }) => `${r.stage}: ${r.status}`).join('\n'), { duration: 5000 });
-              } catch (err) {
-                toast.error('Diagnostics failed: ' + (err instanceof Error ? err.message : 'Unknown error'));
-              }
-            }}
-            className="w-full py-2 mt-2 border border-gray-700 text-gray-400 rounded text-sm hover:bg-gray-800 transition-colors"
-          >
-            Run Diagnostics
-          </button>
-        </CollapsibleSection>
+        {/* ─── Voice & Avatar tab ─── */}
+        {activeTab === 'voice' && (
+          <div className="space-y-4">
+            <Card title="Voice Output" icon="🔊">
+              <ToggleRow
+                label="Voice output"
+                description="Personas speak their replies aloud"
+                checked={voicePrefs.voiceOutputEnabled}
+                onChange={(v) => saveVoicePrefs({ voiceOutputEnabled: v })}
+              />
+              {voicePrefs.voiceOutputEnabled && (
+                <div className="mt-2 pt-3 border-t border-gray-800/60 space-y-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <Label>Default provider</Label>
+                      <select
+                        value={voicePrefs.defaultProvider}
+                        onChange={(e) => saveVoicePrefs({ defaultProvider: e.target.value as VoiceProvider })}
+                        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      >
+                        <option value="os-native">OS Native (free)</option>
+                        <option value="cloud-openai">OpenAI TTS</option>
+                        <option value="cloud-elevenlabs">ElevenLabs</option>
+                        <option value="cloud-google">Google TTS</option>
+                        <option value="auto">Auto (best available)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <Label>Voice speed · {(voicePrefs.defaultSpeed ?? 1.0).toFixed(1)}x</Label>
+                      <input
+                        type="range"
+                        min="0.5"
+                        max="2.0"
+                        step="0.1"
+                        value={voicePrefs.defaultSpeed ?? 1.0}
+                        onChange={(e) => saveVoicePrefs({ defaultSpeed: parseFloat(e.target.value) })}
+                        className="w-full accent-indigo-500"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </Card>
 
-        {/* Account */}
-        <Section title="Account">
-          <button
-            onClick={handleSignOut}
-            className="w-full py-2.5 border border-red-800 text-red-400 rounded-lg text-sm font-medium hover:bg-red-900/20 transition-colors"
-          >
-            Sign Out
-          </button>
-        </Section>
+            <Card title="Captions & Avatar" icon="💬">
+              <ToggleRow
+                label="Captions"
+                description="Show text captions below the avatar"
+                checked={voicePrefs.captionsEnabled}
+                onChange={(v) => saveVoicePrefs({ captionsEnabled: v })}
+              />
+              <ToggleRow
+                label="Animated avatar face"
+                description="Show 2D face for each persona"
+                checked={voicePrefs.featureFlag}
+                onChange={(v) => saveVoicePrefs({ featureFlag: v })}
+              />
+              {voicePrefs.featureFlag && (
+                <div className="mt-3 pt-3 border-t border-gray-800/60">
+                  <Label>Default face style</Label>
+                  <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
+                    {(['face-warm', 'face-cool', 'face-playful', 'face-serious', 'face-gentle', 'face-bold'] as AvatarStyleId[]).map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => saveVoicePrefs({ defaultAvatarStyle: s })}
+                        className={`px-2 py-2 rounded-lg text-xs capitalize transition-all border
+                          ${voicePrefs.defaultAvatarStyle === s
+                            ? 'bg-indigo-600 text-white border-indigo-500 shadow-md shadow-indigo-900/30'
+                            : 'bg-gray-800/60 text-gray-400 border-gray-700 hover:bg-gray-800 hover:border-gray-600'
+                          }`}
+                      >
+                        {s.replace('face-', '')}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </Card>
 
-        {/* Version */}
-        <p className="text-xs text-gray-600 text-center pt-4">
-          PersonaHub Desktop {appVersion || 'dev'}
-        </p>
+            <Card title="API Keys" icon="🔑">
+              <p className="text-xs text-gray-500 mb-3">
+                Stored encrypted in your OS keychain. Used for cloud TTS providers.
+              </p>
+              <div className="space-y-1">
+                {(['cloud-openai', 'cloud-elevenlabs', 'cloud-google'] as const).map((provider) => (
+                  <div key={provider} className="flex items-center justify-between py-2 px-3 bg-gray-800/40 rounded-lg">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${voiceKeyStatus[provider] ? 'bg-emerald-400' : 'bg-gray-600'}`} />
+                      <div className="min-w-0">
+                        <div className="text-sm text-white capitalize">{provider.replace('cloud-', '')}</div>
+                        <div className="text-[10px] text-gray-500">
+                          {voiceKeyStatus[provider] ? 'Key stored securely' : 'Not configured'}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={async () => {
+                        if (voiceKeyStatus[provider]) {
+                          await window.electronAPI.voice.deleteKey(provider);
+                          setVoiceKeyStatus((prev) => ({ ...prev, [provider]: false }));
+                        } else {
+                          const key = prompt(`Enter ${provider.replace('cloud-', '')} API key:`);
+                          if (key) {
+                            await window.electronAPI.voice.storeKey(provider, key);
+                            setVoiceKeyStatus((prev) => ({ ...prev, [provider]: true }));
+                          }
+                        }
+                      }}
+                      className={`px-3 py-1 rounded-md text-xs font-medium transition-colors shrink-0 ${
+                        voiceKeyStatus[provider]
+                          ? 'text-red-400 hover:bg-red-900/20 border border-red-900/40'
+                          : 'text-indigo-400 hover:bg-indigo-900/20 border border-indigo-900/40'
+                      }`}
+                    >
+                      {voiceKeyStatus[provider] ? 'Remove' : 'Add key'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </Card>
 
-        {saved && (
-          <div className="fixed bottom-6 right-6 bg-green-900/80 text-green-300 text-sm px-4 py-2 rounded-lg">
-            Settings saved
+            <Card title="Privacy & Diagnostics" icon="🛡">
+              <ToggleRow
+                label="Local-only mode"
+                description="Never send voice data to cloud providers"
+                checked={voicePrefs.localOnlyMode}
+                onChange={(v) => saveVoicePrefs({ localOnlyMode: v })}
+              />
+              <ToggleRow
+                label="Auto-stop on blur"
+                description="Stop mic when app loses focus"
+                checked={voicePrefs.autoStopOnBlur}
+                onChange={(v) => saveVoicePrefs({ autoStopOnBlur: v })}
+              />
+              <button
+                onClick={async () => {
+                  try {
+                    const results = await window.electronAPI.voice.runDiagnostics();
+                    toast.success(
+                      results.map((r: { stage: string; status: string }) => `${r.stage}: ${r.status}`).join('\n'),
+                      { duration: 5000 },
+                    );
+                  } catch (err) {
+                    toast.error('Diagnostics failed: ' + (err instanceof Error ? err.message : 'Unknown error'));
+                  }
+                }}
+                className="w-full mt-3 py-2.5 border border-gray-700 bg-gray-800/40 text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-800 transition-colors"
+              >
+                Run Diagnostics
+              </button>
+            </Card>
+          </div>
+        )}
+
+        {/* ─── Advanced tab ─── */}
+        {activeTab === 'advanced' && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <Card title="Backups" icon="💾">
+              <NumberRow
+                label="Retention (days)"
+                description="How long to keep file backups"
+                value={prefs.backupRetentionDays}
+                min={1}
+                max={365}
+                onChange={(v) => savePrefs({ ...prefs, backupRetentionDays: v })}
+              />
+              <NumberRow
+                label="Max backups"
+                description="Maximum number of backups to keep"
+                value={prefs.maxBackups}
+                min={10}
+                max={10000}
+                onChange={(v) => savePrefs({ ...prefs, maxBackups: v })}
+              />
+            </Card>
+
+            <Card title="About" icon="ℹ">
+              <div className="text-center py-4">
+                <div className="text-3xl mb-2">🪄</div>
+                <div className="text-sm font-medium text-white">PersonaHub Desktop</div>
+                <div className="text-xs text-gray-500 mt-1">Version {appVersion || 'dev'}</div>
+              </div>
+            </Card>
           </div>
         )}
       </div>
+
+      {/* Saved toast */}
+      {saved && (
+        <div className="fixed bottom-6 right-6 bg-emerald-900/90 border border-emerald-700 text-emerald-200 text-sm px-4 py-2.5 rounded-lg shadow-2xl backdrop-blur flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+          Settings saved
+        </div>
+      )}
     </div>
   );
 }
 
-// ─── Helpers ─────────────────────────────────────
+// ─── Subcomponents ──────────────────────────────────
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Card({
+  title,
+  icon,
+  children,
+  accent,
+  variant,
+}: {
+  title: string;
+  icon?: string;
+  children: React.ReactNode;
+  accent?: boolean;
+  variant?: 'danger';
+}) {
+  const borderClass =
+    variant === 'danger' ? 'border-red-900/40' : accent ? 'border-indigo-800/40' : 'border-gray-800';
+  const bgClass =
+    variant === 'danger'
+      ? 'bg-red-950/10'
+      : accent
+      ? 'bg-gradient-to-br from-indigo-950/30 to-gray-900/60'
+      : 'bg-gray-900/60';
+
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
-      <h2 className="text-sm font-semibold text-gray-300">{title}</h2>
+    <section className={`rounded-xl border ${borderClass} ${bgClass} p-5 backdrop-blur`}>
+      <header className="flex items-center gap-2 mb-4">
+        {icon && <span className="text-base opacity-80">{icon}</span>}
+        <h2 className="text-sm font-semibold text-white tracking-tight">{title}</h2>
+      </header>
+      <div className="space-y-2">{children}</div>
+    </section>
+  );
+}
+
+function Label({ children }: { children: React.ReactNode }) {
+  return (
+    <label className="block text-[11px] font-medium text-gray-500 uppercase tracking-wider mb-2">
       {children}
-    </div>
-  );
-}
-
-function CollapsibleSection({ title, defaultOpen = true, children }: { title: string; defaultOpen?: boolean; children: React.ReactNode }) {
-  const storageKey = `settings-section-${title.toLowerCase().replace(/\s+/g, '-')}`;
-  const [open, setOpen] = useState(() => {
-    try {
-      const stored = localStorage.getItem(storageKey);
-      return stored !== null ? stored === 'true' : defaultOpen;
-    } catch { return defaultOpen; }
-  });
-
-  function toggle() {
-    const next = !open;
-    setOpen(next);
-    try { localStorage.setItem(storageKey, String(next)); } catch { /* noop */ }
-  }
-
-  return (
-    <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
-      <button
-        onClick={toggle}
-        className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-800/50 transition-colors"
-      >
-        <h2 className="text-sm font-semibold text-gray-300">{title}</h2>
-        <span className="text-gray-500 text-xs">{open ? '▲' : '▼'}</span>
-      </button>
-      {open && <div className="px-4 pb-4 space-y-3">{children}</div>}
-    </div>
+    </label>
   );
 }
 
@@ -434,23 +519,57 @@ function ToggleRow({
   onChange: (value: boolean) => void;
 }) {
   return (
-    <div className="flex items-center justify-between py-1">
-      <div>
-        <span className="text-sm text-white block">{label}</span>
-        <span className="text-xs text-gray-500">{description}</span>
+    <div className="flex items-center justify-between py-1.5">
+      <div className="min-w-0 mr-3">
+        <div className="text-sm text-white">{label}</div>
+        <div className="text-xs text-gray-500">{description}</div>
       </div>
       <button
         onClick={() => onChange(!checked)}
-        className={`w-11 h-6 rounded-full relative transition-colors ${
+        className={`w-11 h-6 rounded-full relative transition-colors shrink-0 ${
           checked ? 'bg-indigo-600' : 'bg-gray-700'
         }`}
+        aria-pressed={checked}
       >
         <span
-          className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform ${
+          className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-md transition-transform ${
             checked ? 'left-[22px]' : 'left-0.5'
           }`}
         />
       </button>
+    </div>
+  );
+}
+
+function NumberRow({
+  label,
+  description,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between py-1.5 gap-3">
+      <div className="min-w-0 flex-1">
+        <div className="text-sm text-white">{label}</div>
+        <div className="text-xs text-gray-500">{description}</div>
+      </div>
+      <input
+        type="number"
+        min={min}
+        max={max}
+        value={value}
+        onChange={(e) => onChange(Math.max(min, Math.min(max, parseInt(e.target.value) || min)))}
+        className="w-20 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white text-right focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 shrink-0"
+      />
     </div>
   );
 }

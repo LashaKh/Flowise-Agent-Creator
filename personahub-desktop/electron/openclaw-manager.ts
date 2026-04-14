@@ -52,14 +52,85 @@ export function getOpenClawEntryPath(): string {
 
 /**
  * Check if OpenClaw is ready to run:
- * - The bundled entry script exists (it always should)
- * - The config file exists (means the user has entered their API key)
+ * - The bundled entry script exists
+ * - The config file parses AND contains at least one provider with a non-empty apiKey
+ *
+ * The apiKey check prevents the "file exists but was emptied out" edge case
+ * from silently skipping the wizard and letting the gateway fail later.
  */
 export async function checkInstallation(): Promise<boolean> {
-  const configExists = fs.existsSync(OPENCLAW_CONFIG_PATH);
   const binaryExists = fs.existsSync(getOpenClawEntryPath());
-  installedCache = configExists && binaryExists;
+  if (!binaryExists) {
+    installedCache = false;
+    return false;
+  }
+  installedCache = getConfiguredProvider() !== null;
   return installedCache;
+}
+
+/**
+ * Return the provider whose apiKey is configured, or null if none.
+ * Used by the renderer to show "we detected your existing key" messaging.
+ */
+export function getConfiguredProvider(): 'anthropic' | 'google' | null {
+  try {
+    if (!fs.existsSync(OPENCLAW_CONFIG_PATH)) return null;
+    const raw = fs.readFileSync(OPENCLAW_CONFIG_PATH, 'utf-8');
+    const config = JSON.parse(raw);
+    const providers = config?.models?.providers ?? {};
+    if (typeof providers.anthropic?.apiKey === 'string' && providers.anthropic.apiKey.trim()) {
+      return 'anthropic';
+    }
+    if (typeof providers.google?.apiKey === 'string' && providers.google.apiKey.trim()) {
+      return 'google';
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return a masked preview of the configured key (e.g. "AIza••••3Ls")
+ * so the UI can confirm detection without revealing the full secret.
+ */
+export function getConfiguredKeyPreview(): string | null {
+  try {
+    if (!fs.existsSync(OPENCLAW_CONFIG_PATH)) return null;
+    const raw = fs.readFileSync(OPENCLAW_CONFIG_PATH, 'utf-8');
+    const config = JSON.parse(raw);
+    const provider = getConfiguredProvider();
+    if (!provider) return null;
+    const key: string = config?.models?.providers?.[provider]?.apiKey ?? '';
+    if (key.length < 8) return null;
+    return `${key.slice(0, 4)}••••${key.slice(-3)}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * If the config is missing/invalid but an API key is present in the environment
+ * (ANTHROPIC_API_KEY or GEMINI_API_KEY/GOOGLE_API_KEY), write a config for it
+ * and return true. Lets users who already have keys in their shell skip the wizard.
+ */
+export function tryAutoBootstrapFromEnv(): boolean {
+  if (getConfiguredProvider() !== null) return true;
+  const anthropic = process.env.ANTHROPIC_API_KEY?.trim();
+  const google = process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim();
+  if (anthropic) {
+    writeConfig(anthropic, 'anthropic');
+    console.log('[openclaw] auto-bootstrapped from ANTHROPIC_API_KEY env');
+    installedCache = true;
+    return true;
+  }
+  if (google) {
+    writeConfig(google, 'google');
+    console.log('[openclaw] auto-bootstrapped from GEMINI_API_KEY env');
+    installedCache = true;
+    return true;
+  }
+  return false;
 }
 
 /**

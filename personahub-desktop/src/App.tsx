@@ -21,29 +21,38 @@ export default function App() {
     }
   }
 
-  // On mount, check if OpenClaw is already installed (retry up to 3 times
+  // On mount, check if OpenClaw is already installed.
+  // Retry with exponential backoff (0.3s → 0.6s → 1.2s → 2.4s → 4.8s, ~9s total)
   // because Vite hot-reload can start the renderer before the main process
-  // finishes registering IPC handlers)
+  // finishes registering IPC handlers. The old 3×1.5s fixed-gap loop would give
+  // up too early on a slow launch and falsely render the wizard over a valid config.
   useEffect(() => {
+    let cancelled = false;
     async function check() {
-      for (let attempt = 0; attempt < 3; attempt++) {
+      const delays = [300, 600, 1200, 2400, 4800];
+      for (let attempt = 0; attempt < delays.length; attempt++) {
+        if (cancelled) return;
         try {
           const installed = await window.electronAPI.openclaw.checkInstalled();
           if (installed) {
             try { await ensureDefaultPersona(); } catch (e) { console.error('Default persona error:', e); }
-            setReady(true);
-            setChecking(false);
+            if (!cancelled) {
+              setReady(true);
+              setChecking(false);
+            }
             return;
           }
+          // IPC responded with `false` → config genuinely absent, stop retrying.
+          break;
         } catch (err) {
           console.error(`OpenClaw check attempt ${attempt + 1} failed:`, err);
         }
-        // Wait before retrying (main process may still be initializing)
-        if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
+        await new Promise((r) => setTimeout(r, delays[attempt]));
       }
-      setChecking(false);
+      if (!cancelled) setChecking(false);
     }
     check();
+    return () => { cancelled = true; };
   }, []);
 
   // Called after setup wizard finishes installing OpenClaw
@@ -52,9 +61,20 @@ export default function App() {
     setReady(true);
   }
 
-  // Show nothing while checking
+  // Branded splash while checking (replaces the old black flash).
   if (checking) {
-    return <div className="h-screen bg-gray-950" />;
+    return (
+      <div className="flex flex-col items-center justify-center h-screen bg-gradient-to-b from-gray-950 via-gray-950 to-indigo-950/40 text-white animate-[fadeIn_.3s_ease-out]">
+        <div className="relative">
+          <div className="h-16 w-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-3xl shadow-[0_0_40px_rgba(99,102,241,0.35)]">
+            <span aria-hidden>✨</span>
+          </div>
+          <div className="absolute -inset-3 rounded-3xl border border-indigo-400/30 animate-ping" />
+        </div>
+        <h1 className="mt-6 text-xl font-semibold tracking-tight">PersonaHub</h1>
+        <p className="mt-1 text-sm text-gray-400">Starting…</p>
+      </div>
+    );
   }
 
   // Show setup wizard if OpenClaw isn't installed yet

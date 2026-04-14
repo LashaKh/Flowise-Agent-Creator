@@ -257,6 +257,10 @@ export interface ElectronAPI {
   openclaw: {
     checkInstalled: () => Promise<boolean>;
     install: (apiKey: string, provider: string) => Promise<void>;
+    detectExisting: () => Promise<{
+      provider: 'anthropic' | 'google' | null;
+      keyPreview: string | null;
+    }>;
   };
   window: {
     show: () => Promise<void>;

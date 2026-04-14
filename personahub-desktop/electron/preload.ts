@@ -120,6 +120,7 @@ const electronAPI = {
   openclaw: {
     checkInstalled: () => ipcRenderer.invoke('openclaw:checkInstalled'),
     install: (apiKey: string, provider: string) => ipcRenderer.invoke('openclaw:install', apiKey, provider),
+    detectExisting: () => ipcRenderer.invoke('openclaw:detectExisting'),
   },
 
   // ─── Voice & Avatar TTS ──────────────────────

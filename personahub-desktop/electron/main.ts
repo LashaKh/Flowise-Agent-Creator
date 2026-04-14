@@ -53,6 +53,9 @@ import {
   waitForReady,
   stopGateway,
   cleanupOldRuntime,
+  tryAutoBootstrapFromEnv,
+  getConfiguredProvider,
+  getConfiguredKeyPreview,
 } from './openclaw-manager';
 
 // Platform sync
@@ -568,6 +571,15 @@ function setupIPC() {
     return result;
   });
 
+  // Lets the renderer show "we detected your existing key" in the wizard
+  // instead of asking for one that's already configured.
+  handleValidated('openclaw:detectExisting', async () => {
+    return {
+      provider: getConfiguredProvider(),
+      keyPreview: getConfiguredKeyPreview(),
+    };
+  });
+
   handleValidated('openclaw:install', async (_e, apiKey: string, provider: string) => {
     if (provider !== 'anthropic' && provider !== 'google') {
       throw new Error('Invalid provider: must be anthropic or google');
@@ -740,7 +752,9 @@ app.whenReady().then(async () => {
   setupIPC();
 
   // Try to start the local OpenClaw gateway if it's already installed.
-  const installed = await checkInstallation();
+  // If no config yet, fall back to env vars (ANTHROPIC_API_KEY / GEMINI_API_KEY)
+  // so users with keys in their shell skip the wizard entirely.
+  const installed = (await checkInstallation()) || tryAutoBootstrapFromEnv();
   console.log('[main] checkInstallation:', installed);
   if (installed) {
     try {
