@@ -35,3 +35,14 @@ supabase/.temp
 
 # Coverage
 coverage
+
+# Personal tooling output (Claude Code agents, audits, screenshots)
+audit-findings/
+qa-reports/
+screenshots/
+.claude/agents/
+.claude/skills/
+.claude/scheduled_tasks.lock
+
+# Build artifacts (TypeScript incremental cache)
+personahub-desktop/tsconfig.tsbuildinfo
