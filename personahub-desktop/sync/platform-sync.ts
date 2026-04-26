@@ -55,6 +55,23 @@ export async function syncPersonas(accessToken: string): Promise<SyncResult> {
       });
     }
 
+    // QA finding INT3: reconcile remote deletes. Any local persona with a
+    // `syncedAt` value (= originated from the server at some point) that's
+    // NOT in the current remote response has been deleted server-side —
+    // remove it locally too so it doesn't accumulate stale entries forever.
+    // Local-only personas (syncedAt IS NULL) are NEVER touched — those are
+    // user-created on this device.
+    const remoteIds = new Set(remotePersonas.map((p) => p.id));
+    const localSynced = db.getActivePersonas().filter((p) => p.syncedAt);
+    const orphans = localSynced.filter((p) => !remoteIds.has(p.id));
+    for (const o of orphans) {
+      try {
+        db.deletePersona(o.id);
+      } catch (err) {
+        console.warn('[platform-sync] Failed to delete remote-deleted persona', o.id, err);
+      }
+    }
+
     return { success: true, personaCount: remotePersonas.length, escalations };
   } catch (error) {
     return {

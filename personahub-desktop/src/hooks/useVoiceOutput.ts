@@ -41,7 +41,14 @@ export function useVoiceOutput(options: UseVoiceOutputOptions): UseVoiceOutputRe
   const routerRef = useRef<TtsRouter | null>(null);
   const amplitudeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Create/recreate TTS router when provider settings change
+  // QA finding EC3: consolidated router lifecycle. Previously the router
+  // was created/destroyed in one effect (deps: voiceProvider/voiceId/speed)
+  // and ALSO cancelled in a second effect (deps: personaId). Under a rapid
+  // persona switch, an in-flight `decodeAudioData` promise could still
+  // resolve and call `audioSource.start()` after a `cancel()` had fired
+  // from the second effect. Keying a single effect on all four inputs
+  // guarantees the router is torn down AND re-created when any of them
+  // changes, so there is no stale router state between renders.
   useEffect(() => {
     if (routerRef.current) routerRef.current.destroy();
 
@@ -87,19 +94,31 @@ export function useVoiceOutput(options: UseVoiceOutputOptions): UseVoiceOutputRe
     });
 
     return () => {
-      if (routerRef.current) routerRef.current.destroy();
+      if (routerRef.current) {
+        routerRef.current.cancel();
+        routerRef.current.destroy();
+      }
       if (amplitudeTimerRef.current) clearInterval(amplitudeTimerRef.current);
     };
-  }, [voiceProvider, voiceId, voiceSpeed]);
+  }, [voiceProvider, voiceId, voiceSpeed, personaId]);
 
-  // Cancel speech when persona changes
+  // QA finding INT4 / Phase 3.5: cancel in-flight TTS if the currently-active
+  // persona gets deleted from the main process.
   useEffect(() => {
-    return () => {
-      if (routerRef.current) routerRef.current.cancel();
-      setIsSpeaking(false);
-      setCurrentAmplitude(0);
-      setAvatarState('idle');
-    };
+    const off = window.electronAPI.agent.onPersonaDeleted((deletedId) => {
+      if (deletedId === personaId) {
+        if (routerRef.current) routerRef.current.cancel();
+        setIsSpeaking(false);
+        setCurrentAmplitude(0);
+        setCurrentWord('');
+        setAvatarState('idle');
+        if (amplitudeTimerRef.current) {
+          clearInterval(amplitudeTimerRef.current);
+          amplitudeTimerRef.current = null;
+        }
+      }
+    });
+    return off;
   }, [personaId]);
 
   const cancel = useCallback(() => {

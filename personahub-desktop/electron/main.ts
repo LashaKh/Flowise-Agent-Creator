@@ -8,23 +8,25 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-import { initTray, destroyTray } from './tray';
+import { initTray, destroyTray, isTrayActive } from './tray';
 import { handleAuthCallback, getAuthState, refreshToken, logout, signInWithPassword } from './auth';
 import { getToken, storeToken, clearToken } from './secure-store';
-import { registerShortcuts, unregisterShortcuts } from './shortcuts';
+import { registerShortcuts, unregisterShortcuts, updateShortcut, DEFAULT_SHORTCUT } from './shortcuts';
 import { initAutoUpdater, checkForUpdates, installUpdate } from './updater';
 import { handleValidated, setMainWindow } from './ipc-validation';
 import {
   generateSpeech,
   transcribeAudio,
   generatePrompt,
+  generateSessionTitle,
   disconnect as disconnectGatewayWS,
 } from './openclaw-client';
-import { storeVoiceKey, getVoiceKey, deleteVoiceKey } from './voice-key-store';
+import { setConfirmHandler as setOpenRouterConfirmHandler } from './openrouter-client';
+import { storeVoiceKey, deleteVoiceKey, hasVoiceKey } from './voice-key-store';
 import { getMonthlySummary as getLlmMonthlySummary } from './llm-usage-log';
 
 // Database
-import { initDatabase, closeDatabase, getDatabase } from '../db/init';
+import { initDatabase, closeDatabase, getDatabase, prefsBus, type PrefsChangeEvent } from '../db/init';
 
 // Security
 import { evaluateAction } from '../security/action-guard';
@@ -40,6 +42,7 @@ import {
   onResponse,
   onToolCall,
   initAgentBridge,
+  isGatewayReady,
   setActionGuard,
   setPersonaLookup,
 } from '../openclaw/agent-bridge';
@@ -56,6 +59,7 @@ import {
   tryAutoBootstrapFromEnv,
   getConfiguredProvider,
   getConfiguredKeyPreview,
+  getLastStartupError,
 } from './openclaw-manager';
 
 // Platform sync
@@ -77,11 +81,35 @@ import type {
 // hiding it to the tray).
 let isQuitting = false;
 
+// ─── E2E test mode ─────────────────────────────────
+// Activated by PERSONAHUB_E2E=1 when running under Playwright. Isolates
+// userData to a temp dir, skips the OpenClaw gateway startup (so the app
+// boots without a live LLM), and short-circuits `openclaw:checkInstalled`
+// so the renderer skips SetupWizard and shows the main UI immediately.
+// Guarded by `!app.isPackaged` so a stray env var in production can never
+// trigger this path.
+const IS_E2E = process.env.PERSONAHUB_E2E === '1' && !app.isPackaged;
+if (IS_E2E) {
+  // Use a unique subdir per-run (timestamp + pid) so we never collide with a
+  // stale SingletonLock from a crashed previous run. Electron ≥41 is stricter
+  // about lock files and refuses to boot if the lock exists with ownership
+  // it can't clear.
+  const e2eDir = path.join(os.tmpdir(), `personahub-e2e-${Date.now()}-${process.pid}`);
+  fs.mkdirSync(e2eDir, { recursive: true });
+  app.setPath('userData', e2eDir);
+  // Also disable the single-instance lock entirely in E2E — we always want
+  // a fresh instance. Calling requestSingleInstanceLock without the lock
+  // file present still creates one, but our unique dir makes that harmless.
+  console.log('[main][E2E] userData =>', e2eDir);
+}
+
 // ─── Single instance lock ──────────────────────────
 // Skipped in dev mode because vite-plugin-electron's rapid restart cycle
 // can leave stale lock state that prevents subsequent launches.
+// Also skipped in E2E mode so Playwright-driven runs always launch cleanly
+// (we use a unique per-run userData dir above so there's no real collision).
 const isDevMode = !!process.env.VITE_DEV_SERVER_URL;
-if (!isDevMode) {
+if (!isDevMode && !IS_E2E) {
   const gotLock = app.requestSingleInstanceLock();
   if (!gotLock) {
     app.quit();
@@ -119,8 +147,11 @@ function createWindow() {
   }
 
   // Hide instead of closing — app stays alive in the tray.
+  // BUT: if the tray failed to initialize (missing icon, OS rejection),
+  // fall back to actually quitting on close so the user isn't stranded
+  // with a hidden window they can't restore.
   mainWindow.on('close', (e) => {
-    if (!isQuitting) {
+    if (!isQuitting && isTrayActive()) {
       e.preventDefault();
       mainWindow?.hide();
     }
@@ -149,6 +180,15 @@ function handleDeepLink(url: string) {
 
 // ─── Security wiring (agent bridge + ActionGuard) ──
 
+// Pending confirmation promises, keyed by requestId. The OpenRouter tool-call
+// loop creates an entry here, sends a 'security:confirmRequest' IPC event to
+// the renderer, and awaits until the renderer replies via 'security:confirm'.
+// Stored at module scope so the 'security:confirm' IPC handler can resolve them.
+const pendingConfirmPromises = new Map<
+  string,
+  (result: { allow: boolean; rememberMinutes?: number; alwaysPathPattern?: string }) => void
+>();
+
 let securityWired = false;
 function wireSecurityLayer() {
   if (securityWired) return;
@@ -161,6 +201,31 @@ function wireSecurityLayer() {
       return null;
     }
   });
+
+  // Inject the confirmation asker into the OpenRouter client so its tool-call
+  // loop can surface ConfirmDialog in the renderer and wait for a decision.
+  setOpenRouterConfirmHandler(async (request, personaName, tier, contentPreview) => {
+    const requestId = crypto.randomUUID();
+    return new Promise((resolve) => {
+      pendingConfirmPromises.set(requestId, resolve);
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        // No window to ask — deny to stay safe
+        pendingConfirmPromises.delete(requestId);
+        resolve({ allow: false });
+        return;
+      }
+      mainWindow.webContents.send('security:confirmRequest', {
+        id: requestId,
+        personaName,
+        tool: request.tool,
+        action: request.action,
+        target: request.target,
+        contentPreview,
+        tier,
+      });
+    });
+  });
+
   securityWired = true;
 }
 
@@ -173,7 +238,10 @@ function setupIPC() {
     signInWithPassword(email, password));
   handleValidated('auth:refresh', () => refreshToken());
   handleValidated('auth:logout', () => logout());
-  handleValidated('auth:getToken', () => getToken());
+  // auth:getToken intentionally NOT exposed. The renderer must never see the
+  // Supabase access/refresh token — if it did, any XSS (markdown render bug,
+  // dependency compromise) would be a free exfil path. Main-process callers
+  // (sync/platform-sync.ts) import `getToken` directly from ./auth.
   handleValidated('auth:storeToken', (_e, token: string) => storeToken(token));
   handleValidated('auth:clearToken', () => clearToken());
 
@@ -215,35 +283,69 @@ function setupIPC() {
   });
 
   handleValidated('security:confirm', (_e, requestId: string, response: ConfirmationResponse) => {
+    // Legacy path — used by the older renderer-driven evaluate flow to record
+    // "allow always" / "block always" decisions in permission memory.
     const orig = pendingRequests.get(requestId);
-    if (!orig) {
-      console.warn('[security:confirm] Unknown requestId:', requestId);
-      return;
+    if (orig) {
+      if (response.decision === 'allow_always' && 'pathPattern' in response) {
+        savePermission({
+          personaId: orig.personaId,
+          tool: orig.tool,
+          pathPattern: response.pathPattern,
+          permission: 'allow_always',
+        });
+      } else if (response.decision === 'block') {
+        savePermission({
+          personaId: orig.personaId,
+          tool: orig.tool,
+          pathPattern: orig.target ?? '',
+          permission: 'block_always',
+        });
+      }
+      pendingRequests.delete(requestId);
     }
-    if (response.decision === 'allow_always' && 'pathPattern' in response) {
-      savePermission({
-        personaId: orig.personaId,
-        tool: orig.tool,
-        pathPattern: response.pathPattern,
-        permission: 'allow_always',
-      });
-    } else if (response.decision === 'block') {
-      savePermission({
-        personaId: orig.personaId,
-        tool: orig.tool,
-        pathPattern: orig.target ?? '',
-        permission: 'block_always',
-      });
+
+    // New path — resolve the promise that the OpenRouter tool-call loop is
+    // awaiting. `security:confirm` is fired by the renderer once the user
+    // clicks a button in ConfirmDialog.
+    const resolver = pendingConfirmPromises.get(requestId);
+    if (resolver) {
+      const allow = response.decision === 'allow_once' || response.decision === 'allow_always';
+      const alwaysPathPattern = response.decision === 'allow_always' && 'pathPattern' in response
+        ? response.pathPattern
+        : undefined;
+      const rememberMinutes = response.decision === 'allow_once' && 'rememberMinutes' in response
+        ? response.rememberMinutes
+        : undefined;
+      resolver({ allow, rememberMinutes, alwaysPathPattern });
+      pendingConfirmPromises.delete(requestId);
     }
-    pendingRequests.delete(requestId);
   });
 
   // ─── Agent ──────────────────────────────────
-  handleValidated('agent:send', async (_e, personaId: string, message: string) => {
+  handleValidated('agent:send', async (_e, personaId: string, sessionId: string, message: string) => {
+    // Fail fast with a user-facing message if the gateway didn't boot —
+    // otherwise the request hits agentBridge.sendMessage and dies at the
+    // network layer with a cryptic ECONNREFUSED that bubbles up much later.
+    if (!isGatewayReady()) {
+      throw new Error('AI gateway is not running. Please open Settings → run Diagnostics, or restart the app.');
+    }
     const persona = getDatabase().getPersonaById(personaId);
     if (!persona) throw new Error(`Persona ${personaId} not found`);
     await startAgent(persona);
-    await agentSendMessage(personaId, message, persona);
+
+    // Session-scoped history: OpenRouter personas need priorMessages for
+    // memory, and scoping to the active session keeps each conversation
+    // isolated. Drop the most recent user message (the one we're sending)
+    // since the renderer persisted it before this IPC call.
+    const sessionMessages = getDatabase().getChatMessagesBySession(sessionId);
+    const priorMessages = sessionMessages
+      .filter((m) => !!m.content && (m.role === 'user' || m.role === 'assistant'))
+      .slice(0, -1)
+      .slice(-20)
+      .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+
+    await agentSendMessage(personaId, sessionId, message, persona, priorMessages);
   });
 
   handleValidated('agent:stop', (_e, personaId: string) => {
@@ -257,7 +359,26 @@ function setupIPC() {
     description: string,
     options?: { temperature?: number; confirmationLevel?: ConfirmationLevel; modelName?: string }
   ) => {
-    const systemPrompt = await generatePrompt(name, description);
+    // QA finding E2E1: when the OpenClaw gateway is unreachable (not yet
+    // installed, offline, or crashed), `generatePrompt` throws ECONNREFUSED
+    // and the user sees a cryptic error. Fall back to a reasonable
+    // placeholder prompt so the persona still gets created — the user can
+    // later hit "Regenerate Prompt" in Settings once the gateway is up.
+    let systemPrompt: string;
+    let usedFallbackPrompt = false;
+    try {
+      systemPrompt = await generatePrompt(name, description);
+    } catch (err) {
+      console.warn('[persona:create] generatePrompt failed, using placeholder:', err);
+      usedFallbackPrompt = true;
+      systemPrompt = [
+        `You are ${name}.`,
+        '',
+        description?.trim() || 'A helpful AI assistant.',
+        '',
+        '(Placeholder prompt — regenerate from Settings once the OpenClaw gateway is available for a personalized one.)',
+      ].join('\n');
+    }
 
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
@@ -280,9 +401,23 @@ function setupIPC() {
 
     const persona = db.getPersonaById(id);
     if (persona) {
-      await startAgent(persona);
+      // Write SOUL.md/AGENTS.md/IDENTITY.md for this persona. If the filesystem
+      // write fails, roll back the DB insert so the UI doesn't show an
+      // orphaned persona that can't chat (QA finding INT2).
+      try {
+        await startAgent(persona);
+      } catch (err) {
+        console.error('[persona:create] startAgent failed, rolling back DB row:', err);
+        try { db.db.prepare('DELETE FROM persona_configs WHERE id = ?').run(id); } catch {}
+        // Best-effort cleanup of any partial agent files under ~/.openclaw/agents/{id}/.
+        try {
+          const agentDir = path.join(os.homedir(), '.openclaw', 'agents', id);
+          if (fs.existsSync(agentDir)) fs.rmSync(agentDir, { recursive: true, force: true });
+        } catch {}
+        throw err;
+      }
     }
-    return { id, name, systemPrompt };
+    return { id, name, systemPrompt, usedFallbackPrompt };
   });
 
   // ─── Persona Management ─────────────────────
@@ -313,10 +448,13 @@ function setupIPC() {
 
     db.upsertPersona(persona);
 
-    // Re-write SOUL.md if anything that affects agent config changed
-    if (updates.systemPrompt !== undefined || updates.name !== undefined || updates.enabledTools !== undefined || updates.allowedPaths !== undefined) {
-      await startAgent(persona);
-    }
+    // Any update rebuilds the agent config (SOUL.md, AGENTS.md, IDENTITY.md,
+    // gateway registration). `startAgent` is now idempotent and cheap —
+    // better to over-refresh than to leave stale caches around.
+    // Previously this only fired for 4 fields, so settings-only updates
+    // (voice, temperature, modelName, personaMemory) never took effect
+    // until app restart.
+    await startAgent(persona);
 
     return persona;
   });
@@ -329,17 +467,16 @@ function setupIPC() {
     await stopAgent(id);
     removeAgentConfig(id);
 
-    db.db.transaction(() => {
-      db.db.prepare('DELETE FROM knowledge_documents WHERE persona_id = ?').run(id);
-      db.db.prepare('DELETE FROM permission_memory WHERE persona_id = ?').run(id);
-      db.db.prepare(`DELETE FROM backup_records WHERE action_log_id IN
-        (SELECT id FROM action_log_entries WHERE persona_id = ?)`).run(id);
-      db.db.prepare('DELETE FROM action_log_entries WHERE persona_id = ?').run(id);
-      db.db.prepare(`DELETE FROM chat_messages WHERE session_id IN
-        (SELECT id FROM chat_sessions WHERE persona_id = ?)`).run(id);
-      db.db.prepare('DELETE FROM chat_sessions WHERE persona_id = ?').run(id);
-      db.db.prepare('DELETE FROM persona_configs WHERE id = ?').run(id);
-    })();
+    // All row-level deletes are now owned by LocalDB.deletePersona as a
+    // single atomic transaction (QA finding INT4). Keeps the cascade
+    // logic in one place and guarantees atomicity even if future callers
+    // bypass this IPC handler.
+    db.deletePersona(id);
+
+    // QA finding INT4 / Phase 3.5: let the renderer cancel any in-flight
+    // TTS or tool call bound to this persona so it doesn't keep talking
+    // after the user deleted it.
+    mainWindow?.webContents.send('persona:deleted', id);
   });
 
   handleValidated('persona:duplicate', async (_e, id: string) => {
@@ -373,6 +510,23 @@ function setupIPC() {
     db.upsertPersona(persona);
     await startAgent(persona);
     return { systemPrompt };
+  });
+
+  // Auto-title a session from its first exchange. Called by the renderer
+  // after the first assistant reply completes so new sessions graduate from
+  // "New chat · 2:14 PM" to something meaningful like "Trip plans for Japan".
+  handleValidated('chat:autoTitle', async (_e, sessionId: string, userMessage: string, assistantReply: string) => {
+    try {
+      const title = await generateSessionTitle(userMessage, assistantReply);
+      if (title) {
+        getDatabase().updateChatSessionTitle(sessionId, title);
+        return { title };
+      }
+      return { title: null };
+    } catch (err) {
+      console.warn('[chat:autoTitle] Failed to generate title (non-fatal):', err);
+      return { title: null };
+    }
   });
 
   handleValidated('persona:clearHistory', (_e, personaId: string) => {
@@ -508,10 +662,29 @@ function setupIPC() {
     // these .md files automatically at chat time).
     const knowledgeDir = path.join(os.homedir(), '.openclaw', 'agents', personaId, 'knowledge');
     fs.mkdirSync(knowledgeDir, { recursive: true });
-    const mdFileName = `${title}.md`;
-    const mdPath = path.join(knowledgeDir, mdFileName);
-    fs.writeFileSync(mdPath, text, 'utf-8');
 
+    // QA finding SEC16: sanitize the title into a safe filename. The title is
+    // derived from the source document's content (convertDocument) so a
+    // crafted PDF could include path separators or "..". Replace anything
+    // outside [A-Za-z0-9._-] with underscore and trim length.
+    const safeTitle = (title || 'document')
+      .replace(/[^A-Za-z0-9._-]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 120) || 'document';
+    const mdFileName = `${safeTitle}.md`;
+    const mdPath = path.join(knowledgeDir, mdFileName);
+
+    // Defense in depth: resolve the final absolute path and assert it stays
+    // inside the persona's knowledge directory. Rejects any lingering
+    // traversal attempt that survived sanitization.
+    const resolvedMdPath = path.resolve(mdPath);
+    const resolvedKnowledgeDir = path.resolve(knowledgeDir);
+    if (!resolvedMdPath.startsWith(resolvedKnowledgeDir + path.sep)) {
+      throw new Error('Invalid knowledge document path — refusing to write outside knowledge dir');
+    }
+    // QA finding INT2: insert the DB row FIRST, then write the file. If the
+    // file write fails we roll back the DB insert, so we never end up with
+    // an orphaned .md file that the LLM keeps reading but the UI can't list.
     const stat = fs.statSync(filePath);
     const ext = path.extname(filePath).toLowerCase().replace('.', '') as KnowledgeDocument['fileType'];
     const doc: KnowledgeDocument = {
@@ -521,10 +694,18 @@ function setupIPC() {
       fileName: path.basename(filePath),
       fileType: ext,
       fileSize: stat.size,
-      workspacePath: mdPath,
+      workspacePath: resolvedMdPath,
       createdAt: new Date().toISOString(),
     };
     db.insertKnowledgeDoc(doc);
+    try {
+      fs.writeFileSync(resolvedMdPath, text, 'utf-8');
+    } catch (err) {
+      // File write failed — roll back the DB row so we don't leak a ghost
+      // document that the UI lists but chat can't reference.
+      try { db.deleteKnowledgeDoc(doc.id); } catch {}
+      throw err;
+    }
     return doc;
   });
 
@@ -534,10 +715,21 @@ function setupIPC() {
 
   handleValidated('kb:delete', (_e, docId: string) => {
     const db = getDatabase();
-    const doc = db.deleteKnowledgeDoc(docId);
+    // QA finding INT3: unlink the file FIRST, then remove the DB row. If
+    // we went DB-first and the unlink failed (Windows AV/indexer file lock),
+    // the agent would keep reading a "deleted" document the UI could no
+    // longer manage.
+    const doc = db.getKnowledgeDocById(docId);
     if (doc && fs.existsSync(doc.workspacePath)) {
-      fs.unlinkSync(doc.workspacePath);
+      try {
+        fs.unlinkSync(doc.workspacePath);
+      } catch (err) {
+        // Leave the DB row in place so the user can retry the delete.
+        console.error('[kb:delete] unlink failed, keeping DB row:', err);
+        throw err;
+      }
     }
+    db.deleteKnowledgeDoc(docId);
   });
 
   // ─── Sync ───────────────────────────────────
@@ -567,6 +759,7 @@ function setupIPC() {
 
   // ─── OpenClaw setup ─────────────────────────
   handleValidated('openclaw:checkInstalled', async () => {
+    if (IS_E2E) return true; // E2E skips OpenClaw install — UI must render without it
     const result = await checkInstallation();
     return result;
   });
@@ -587,9 +780,68 @@ function setupIPC() {
     writeConfig(apiKey, provider);
     await startGateway();
     const ready = await waitForReady();
-    if (!ready) throw new Error('Gateway failed to start within 30 seconds');
+    if (!ready) {
+      // Prefer the specific reason captured from stderr (port collision,
+      // spawn failure, …) over the generic timeout. Falls back to the
+      // 30s message only if no specific reason was recorded.
+      const reason = getLastStartupError();
+      throw new Error(reason ?? 'Gateway failed to start within 30 seconds');
+    }
     wireSecurityLayer();
     initAgentBridge();
+  });
+
+  // Light validation of an API key BEFORE we save it to disk and launch
+  // the gateway. Catches typos and revoked keys up front so the user sees
+  // "key was rejected" on the wizard instead of a cryptic stream error
+  // later. Renderer-side fetch is blocked by CSP, so we proxy through
+  // main where outbound HTTPS is unrestricted.
+  handleValidated('openclaw:validateKey', async (_e, apiKey: string, provider: string) => {
+    if (typeof apiKey !== 'string' || !apiKey.trim()) {
+      return { ok: false, error: 'API key is empty' };
+    }
+    if (provider !== 'anthropic' && provider !== 'google') {
+      return { ok: false, error: 'Invalid provider' };
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+    try {
+      let res: Response;
+      if (provider === 'anthropic') {
+        res = await fetch('https://api.anthropic.com/v1/models', {
+          headers: {
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+          },
+          signal: controller.signal,
+        });
+      } else {
+        res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
+          { signal: controller.signal },
+        );
+      }
+      if (res.ok) return { ok: true };
+      if (res.status === 401 || res.status === 403) {
+        return { ok: false, error: 'API key was rejected by the provider. Double-check it and try again.' };
+      }
+      if (res.status === 429) {
+        // Rate-limited — accept the key, the rate limit isn't our problem to solve here
+        return { ok: true };
+      }
+      return { ok: false, error: `Provider returned HTTP ${res.status}. Please try again.` };
+    } catch (err) {
+      const isAbort = err instanceof Error && err.name === 'AbortError';
+      return {
+        ok: false,
+        error: isAbort
+          ? 'Validation timed out. Check your internet connection and try again.'
+          : err instanceof Error ? err.message : 'Failed to reach provider',
+      };
+    } finally {
+      clearTimeout(timeoutId);
+    }
   });
 
   // ─── TTS / STT ──────────────────────────────
@@ -627,13 +879,12 @@ function setupIPC() {
     return storeVoiceKey(providerId, apiKey);
   });
 
-  handleValidated('voice:getKey', async (_event, providerId: string) => {
-    return getVoiceKey(providerId);
-  });
-
-  // Audit finding P5-B-3: renderer only needs existence check, not the key.
+  // voice:getKey intentionally NOT exposed. The renderer must never see a
+  // decrypted cloud-TTS or OpenRouter key. Use voice:hasKey to check existence;
+  // main-process callers (openrouter-config.ts, openclaw-client.ts) call
+  // `getVoiceKey` directly.
   handleValidated('voice:hasKey', async (_event, providerId: string) => {
-    return !!(await getVoiceKey(providerId));
+    return hasVoiceKey(providerId);
   });
 
   handleValidated('voice:deleteKey', async (_event, providerId: string) => {
@@ -643,26 +894,31 @@ function setupIPC() {
   // ─── Voice preferences ──────────────────────
   handleValidated('voice:getPrefs', async () => {
     const prefsPath = path.join(app.getPath('userData'), 'voice-prefs.json');
-    try {
-      if (fs.existsSync(prefsPath)) {
-        return JSON.parse(fs.readFileSync(prefsPath, 'utf-8'));
-      }
-    } catch (err) {
-      console.warn('[voice:getPrefs] Failed to read preferences:', err);
-    }
-    return {
+    // Defaults and stored prefs are merged on read so a partial file
+    // (e.g. only { defaultAvatarStyle }) doesn't leave required keys undefined
+    // in the renderer — which was silencing voice output after an avatar pick.
+    const defaults = {
       voiceOutputEnabled: true,
       voiceInputEnabled: false,
-      defaultProvider: 'os-native',
+      defaultProvider: 'os-native' as const,
       captionsEnabled: true,
-      defaultAvatarStyle: 'face-warm',
-      reducedMotionOverride: 'auto',
+      defaultAvatarStyle: 'face-warm' as const,
+      reducedMotionOverride: 'auto' as const,
       localOnlyMode: false,
       autoStopOnBlur: true,
       monthlySpendCeiling: {},
       featureFlag: true,
       defaultSpeed: 1,
     };
+    let stored: Record<string, unknown> = {};
+    try {
+      if (fs.existsSync(prefsPath)) {
+        stored = JSON.parse(fs.readFileSync(prefsPath, 'utf-8'));
+      }
+    } catch (err) {
+      console.warn('[voice:getPrefs] Failed to read preferences:', err);
+    }
+    return { ...defaults, ...stored };
   });
 
   handleValidated('voice:setPrefs', async (_event, prefs: Record<string, unknown>) => {
@@ -676,12 +932,37 @@ function setupIPC() {
       console.warn('[voice:setPrefs] Failed to read existing preferences:', err);
     }
     const merged = { ...existing, ...prefs };
-    fs.writeFileSync(prefsPath, JSON.stringify(merged, null, 2), 'utf-8');
+    // QA finding INT3: atomic write via tmp + rename. A crash mid-write used
+    // to truncate voice-prefs.json to empty, silently reverting all user
+    // preferences. `renameSync` is atomic on POSIX and on Windows ≥ Vista.
+    const tmpPath = `${prefsPath}.tmp`;
+    try {
+      fs.writeFileSync(tmpPath, JSON.stringify(merged, null, 2), 'utf-8');
+      fs.renameSync(tmpPath, prefsPath);
+    } catch (err) {
+      try { fs.unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }
+      throw err;
+    }
   });
 
   // ─── LLM usage (for the Settings → AI cost dashboard) ──
   handleValidated('llm:getUsage', async () => {
     return getLlmMonthlySummary();
+  });
+
+  // ─── Dev-only perf snapshot (QA PERF-INFRA) ─────
+  // Only exposed when running under vite dev or E2E mode. Production builds
+  // get an empty object so callers can still invoke the IPC safely without
+  // branching on dev vs prod.
+  handleValidated('perf:memory', async () => {
+    if (app.isPackaged) return {};
+    const m = process.memoryUsage();
+    return {
+      rss: m.rss,
+      heapTotal: m.heapTotal,
+      heapUsed: m.heapUsed,
+      external: m.external,
+    };
   });
 
   // ─── Voice diagnostics ──────────────────────
@@ -717,6 +998,22 @@ function setupIPC() {
 }
 
 // ─── App lifecycle ─────────────────────────────────
+
+// Single-instance lock: if another copy of PersonaHub is already running,
+// focus its window instead of launching a duplicate (which would fight over
+// ports 5173 / 18789 and spawn zombie gateways).
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      if (!mainWindow.isVisible()) mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
 
 app.whenReady().then(async () => {
   try {
@@ -754,21 +1051,26 @@ app.whenReady().then(async () => {
   // Try to start the local OpenClaw gateway if it's already installed.
   // If no config yet, fall back to env vars (ANTHROPIC_API_KEY / GEMINI_API_KEY)
   // so users with keys in their shell skip the wizard entirely.
-  const installed = (await checkInstallation()) || tryAutoBootstrapFromEnv();
-  console.log('[main] checkInstallation:', installed);
-  if (installed) {
-    try {
-      refreshConfigToken();
-      await startGateway();
-      const ready = await waitForReady();
-      console.log('[main] gateway ready:', ready);
-      if (ready) {
-        wireSecurityLayer();
-        initAgentBridge();
+  // E2E mode skips the gateway entirely — no external network calls during test.
+  if (!IS_E2E) {
+    const installed = (await checkInstallation()) || tryAutoBootstrapFromEnv();
+    console.log('[main] checkInstallation:', installed);
+    if (installed) {
+      try {
+        refreshConfigToken();
+        await startGateway();
+        const ready = await waitForReady();
+        console.log('[main] gateway ready:', ready);
+        if (ready) {
+          wireSecurityLayer();
+          initAgentBridge();
+        }
+      } catch (err) {
+        console.error('[main] Failed to auto-start gateway:', err);
       }
-    } catch (err) {
-      console.error('[main] Failed to auto-start gateway:', err);
     }
+  } else {
+    console.log('[main][E2E] Skipping OpenClaw gateway startup.');
   }
 
   createWindow();
@@ -817,17 +1119,31 @@ app.whenReady().then(async () => {
     mainWindow?.webContents.send('power:suspend');
   });
 
+  // Load user preferences ONCE so the initial shortcut / login-item state
+  // honors the user's saved choices instead of hard-coded defaults.
+  const prefs = getDatabase().getOrCreatePreferences('default');
+
   if (mainWindow) {
     initTray(mainWindow);
-    registerShortcuts(mainWindow);
-    initAutoUpdater(mainWindow);
+    registerShortcuts(mainWindow, prefs.globalKeyboardShortcut || DEFAULT_SHORTCUT);
+    if (!IS_E2E) initAutoUpdater(mainWindow); // E2E: no external update checks
   }
 
   // Forward streamed agent responses + tool calls to the renderer.
   onResponse((chunk) => mainWindow?.webContents.send('agent:response', chunk));
   onToolCall((toolCall) => mainWindow?.webContents.send('agent:toolCall', toolCall));
 
-  app.setLoginItemSettings({ openAtLogin: true });
+  app.setLoginItemSettings({ openAtLogin: prefs.startOnLogin });
+
+  // React to pref changes live — no app restart required.
+  prefsBus.on('changed', (event: PrefsChangeEvent) => {
+    if (event.updated.globalKeyboardShortcut !== undefined) {
+      updateShortcut(event.current.globalKeyboardShortcut || DEFAULT_SHORTCUT);
+    }
+    if (event.updated.startOnLogin !== undefined) {
+      app.setLoginItemSettings({ openAtLogin: event.current.startOnLogin });
+    }
+  });
 });
 
 app.on('activate', () => {
@@ -856,6 +1172,14 @@ app.on('before-quit', (event) => {
   if (cleanupInProgress) return;
   cleanupInProgress = true;
   event.preventDefault();
+
+  // Reject any tool-call confirmations still awaiting user input so the
+  // tool-call agent loop unblocks and lets the app exit cleanly.
+  for (const [id, resolve] of pendingConfirmPromises) {
+    resolve({ allow: false });
+    pendingConfirmPromises.delete(id);
+  }
+
   (async () => {
     try {
       unregisterShortcuts();

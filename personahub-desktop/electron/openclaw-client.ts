@@ -2,7 +2,7 @@ import WebSocket from 'ws';
 import http from 'node:http';
 import https from 'node:https';
 import os from 'node:os';
-import { getConfiguredModel, getProviderConfig, GATEWAY_TOKEN } from './openclaw-manager';
+import { getProviderConfig, GATEWAY_TOKEN } from './openclaw-manager';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -245,7 +245,7 @@ function streamingRequest(
               try {
                 const json = JSON.parse(data);
                 const delta = json.choices?.[0]?.delta?.content;
-                if (delta) {
+                if (typeof delta === 'string' && delta.length > 0) {
                   accumulated += delta;
                   onChunk(delta, false);
                 }
@@ -311,12 +311,14 @@ export async function sendMessage(
     { role: 'user', content: userContent },
   ];
 
-  console.log('[openclaw-client] sendMessage:', {
-    agentId,
-    model,
-    toolCount: tools.length,
-    toolNames: tools.map((t) => t.function.name),
-  });
+  if (process.env.DEBUG_AGENT) {
+    console.debug('[openclaw-client] sendMessage:', {
+      agentId,
+      model,
+      toolCount: tools.length,
+      toolNames: tools.map((t) => t.function.name),
+    });
+  }
 
   // Stream request — gateway handles tool execution internally
   return streamingRequest(agentId, model, messages, tools, sessionKey, onChunk);
@@ -495,6 +497,88 @@ Write the prompt in second person ("You are..."). Make it vivid and specific —
 }
 
 // ---------------------------------------------------------------------------
+// generateSessionTitle — 3-5 word title from the first exchange
+// ---------------------------------------------------------------------------
+
+/**
+ * Ask the gateway to summarize a conversation start in 3-5 words. Used by
+ * the chat window after the first assistant reply completes so the new
+ * session gets a meaningful title instead of "New chat · timestamp".
+ *
+ * Returns a short string with no quotes or trailing punctuation. Throws on
+ * gateway error — callers should swallow and fall back to the timestamp.
+ */
+export async function generateSessionTitle(
+  userMessage: string,
+  assistantReply: string,
+): Promise<string> {
+  const metaPrompt = `Summarize this conversation start in 3-5 words. Respond with ONLY the title — no quotes, no punctuation, no prefix like "Title:".
+
+User: ${userMessage.slice(0, 500)}
+Assistant: ${assistantReply.slice(0, 500)}`;
+
+  const payload = JSON.stringify({
+    model: 'openclaw',
+    messages: [{ role: 'user', content: metaPrompt }],
+    stream: false,
+  });
+
+  return new Promise<string>((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port: GATEWAY_PORT,
+        path: '/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${GATEWAY_TOKEN}`,
+          'Content-Length': Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        let body = '';
+        res.setEncoding('utf-8');
+        res.on('data', (chunk: string) => { body += chunk; });
+        res.on('end', () => {
+          if (res.statusCode && res.statusCode >= 400) {
+            reject(new Error(`Title generation failed (${res.statusCode})`));
+            return;
+          }
+          try {
+            const json = JSON.parse(body);
+            const content: string | undefined = json.choices?.[0]?.message?.content;
+            if (!content) { reject(new Error('Empty title response')); return; }
+            // Strip quotes, trailing punctuation, and cap at ~60 chars.
+            const clean = content
+              .trim()
+              .replace(/^["'`]+|["'`]+$/g, '')
+              .replace(/[.!?]+$/g, '')
+              .replace(/\s+/g, ' ')
+              .slice(0, 60);
+            // QA finding EC1 LOW: if the model returned only punctuation the
+            // cleaned title can be empty. Reject so the caller uses its
+            // fallback ("New chat", first-message snippet) rather than
+            // saving an empty title to the DB.
+            if (!clean) {
+              reject(new Error('Empty title after cleaning'));
+              return;
+            }
+            resolve(clean);
+          } catch {
+            reject(new Error('Failed to parse title response'));
+          }
+        });
+      },
+    );
+    req.on('error', (err) => reject(new Error(`Gateway connection failed: ${err.message}`)));
+    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Title generation timed out')); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+// ---------------------------------------------------------------------------
 // generateSpeech — cloud TTS via OpenClaw gateway (returns binary audio)
 // ---------------------------------------------------------------------------
 
@@ -502,7 +586,7 @@ export async function generateSpeech(
   text: string,
   voiceId: string,
   provider: string,
-): Promise<{ audioBuffer: ArrayBuffer; durationMs: number }> {
+): Promise<{ audioBuffer: ArrayBuffer }> {
   const payload = JSON.stringify({
     model: `tts-1`,
     input: text,
@@ -534,12 +618,16 @@ export async function generateSpeech(
             return;
           }
           const buffer = Buffer.concat(chunks);
-          // Estimate duration from audio size (rough: MP3 ~128kbps = 16KB/s)
-          const durationMs = Math.round((buffer.length / 16000) * 1000);
-          resolve({
-            audioBuffer: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
-            durationMs,
-          });
+          // Don't fabricate a durationMs — the old formula
+          // `buffer.length / 16000 * 1000` hard-coded 128kbps MP3 and was
+          // 10-100x wrong for WAV/Opus/AAC codecs the provider may return.
+          // The renderer computes the real duration from the decoded
+          // AudioBuffer via Web Audio API instead (see ttsRouter.ts).
+          // Copy into a fresh ArrayBuffer so the slice doesn't depend on
+          // Node's internal buffer-pool layout (QA finding EC5).
+          const out = new ArrayBuffer(buffer.length);
+          new Uint8Array(out).set(buffer);
+          resolve({ audioBuffer: out });
         });
       },
     );
@@ -595,9 +683,12 @@ function transcribeViaGemini(apiKey: string, base64Audio: string, mimeType: stri
     const req = https.request(
       {
         hostname: 'generativelanguage.googleapis.com',
-        path: `/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+        path: '/v1beta/models/gemini-2.5-flash:generateContent',
         method: 'POST',
         headers: {
+          // Pass the key via header, not query string, so it never leaks into
+          // access logs, referer headers, or proxy caches.
+          'x-goog-api-key': apiKey,
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(body),
         },
@@ -613,10 +704,23 @@ function transcribeViaGemini(apiKey: string, base64Audio: string, mimeType: stri
           }
           try {
             const json = JSON.parse(responseBody);
-            const text = json?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (typeof text !== 'string') {
+              // QA finding EC6 LOW: don't silently resolve '' when Gemini
+              // returned an error-shaped response (e.g., safety block,
+              // quota exceeded). Surface the error so the user knows the
+              // audio wasn't transcribed and their API quota was spent.
+              const feedback = json?.promptFeedback || json?.error;
+              reject(new Error(
+                feedback
+                  ? `Gemini rejected the audio: ${JSON.stringify(feedback).slice(0, 200)}`
+                  : 'Gemini returned an unexpected response shape',
+              ));
+              return;
+            }
             resolve(text.trim());
-          } catch {
-            reject(new Error('Failed to parse Gemini response'));
+          } catch (err) {
+            reject(err instanceof Error ? err : new Error('Failed to parse Gemini response'));
           }
         });
       },

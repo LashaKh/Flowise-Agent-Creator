@@ -4,13 +4,35 @@ import ChatWindow from './components/ChatWindow';
 import ActivityLog from './components/ActivityLog';
 import Settings from './components/Settings';
 import SetupWizard from './components/SetupWizard';
+import ConfirmDialog from './components/ConfirmDialog';
+import { useTheme } from './hooks/useTheme';
+import type { ConfirmationRequest, ConfirmationResponse } from './types';
 
 type AppView = 'chat' | 'activity' | 'settings';
 
 export default function App() {
+  // Apply the user's saved theme on mount + when Settings emits prefs-changed.
+  useTheme();
+
   const [activeView, setActiveView] = useState<AppView>('chat');
   const [ready, setReady] = useState(false);
   const [checking, setChecking] = useState(true);
+
+  // Tool-call approval dialog — the main process fires `security:confirmRequest`
+  // when the OpenRouter agent loop needs user approval for a tool. We show
+  // the modal, then send the decision back via security.confirmAction.
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmationRequest | null>(null);
+  useEffect(() => {
+    const off = window.electronAPI.security.onConfirmRequest((req) => {
+      setConfirmRequest(req as ConfirmationRequest);
+    });
+    return off;
+  }, []);
+  const handleConfirmResponse = (response: ConfirmationResponse) => {
+    if (!confirmRequest) return;
+    window.electronAPI.security.confirmAction(confirmRequest.id, response);
+    setConfirmRequest(null);
+  };
 
   // Ensure at least one persona exists so the user always has something to chat with
   async function ensureDefaultPersona() {
@@ -83,9 +105,23 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen bg-gray-950 text-white">
+    <div className="flex h-screen bg-gray-950 text-white relative">
+      {/*
+        macOS draggable title-bar region. BrowserWindow uses
+        titleBarStyle: 'hiddenInset' so the native title bar is absent;
+        this invisible 28px strip restores window drag + double-click-to-zoom.
+        Interactive children (buttons) must opt out via WebkitAppRegion: 'no-drag'.
+      */}
+      <div
+        aria-hidden
+        className="absolute inset-x-0 top-0 h-7 z-40 pointer-events-none"
+        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+      />
       {/* Navigation sidebar */}
-      <nav className="w-14 bg-gray-900 border-r border-gray-800 flex flex-col items-center py-4 gap-2">
+      <nav
+        className="w-14 bg-gray-900 border-r border-gray-800 flex flex-col items-center py-4 gap-2 pt-10"
+        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      >
         <NavButton
           icon="💬"
           label="Chat"
@@ -114,6 +150,9 @@ export default function App() {
       </main>
 
       <Toaster position="bottom-right" />
+      {confirmRequest && (
+        <ConfirmDialog request={confirmRequest} onResponse={handleConfirmResponse} />
+      )}
     </div>
   );
 }

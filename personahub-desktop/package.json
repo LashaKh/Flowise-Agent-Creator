@@ -1,12 +1,14 @@
 {
   "name": "personahub-desktop",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "description": "PersonaHub Desktop — Local Agent Runner",
   "author": "Magic Worlds",
   "main": "dist-electron/main.js",
   "type": "module",
   "scripts": {
+    "predev": "node -e \"const{execSync}=require('child_process');try{execSync('lsof -ti:5173,18789 | xargs kill -9',{stdio:'ignore'})}catch{};try{execSync('pkill -9 -f \\\"Flowise_Agent_Builder/personahub-desktop/node_modules/.pnpm/electron\\\"',{stdio:'ignore'})}catch{}\"",
+    "postinstall": "electron-builder install-app-deps",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "electron:dev": "vite build && electron .",
@@ -17,11 +19,15 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:a11y": "axe --exit http://localhost:5173"
+    "test:a11y": "axe --exit http://localhost:5173",
+    "qa:prebuild": "node -e \"require('fs').existsSync('dist-electron/main.js')||require('child_process').execSync('vite build',{stdio:'inherit'})\"",
+    "qa:server": "pnpm qa:prebuild && tsx scripts/playwright/server.ts",
+    "qa:cmd": "tsx scripts/playwright/cmd.ts",
+    "qa:stop": "tsx scripts/playwright/cmd.ts stop"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.84.0",
-    "better-sqlite3": "^11.0.0",
+    "better-sqlite3": "^12.9.0",
     "electron-updater": "^6.3.0",
     "mammoth": "^1.11.0",
     "openclaw": "^2026.4.7",
@@ -29,11 +35,14 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-hot-toast": "^2.6.0",
+    "react-virtuoso": "^4.18.5",
     "uuid": "^11.1.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@axe-core/cli": "^4.11.1",
+    "@electron/rebuild": "^4.0.3",
+    "@playwright/test": "^1.59.1",
     "@tailwindcss/postcss": "^4.1.17",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
@@ -43,17 +52,39 @@
     "@types/react-dom": "^19.2.3",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.5.0",
-    "@vitejs/plugin-react": "^5.1.1",
+    "@vitejs/plugin-react": "^6.0.1",
+    "@vitest/coverage-v8": "^4.1.4",
     "autoprefixer": "^10.4.22",
-    "electron": "^35.0.0",
-    "electron-builder": "^25.0.0",
+    "electron": "^41.2.0",
+    "electron-builder": "^26.8.1",
+    "electron-builder-squirrel-windows": "^26",
     "jsdom": "^29.0.2",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.17",
+    "tsx": "^4.21.0",
     "typescript": "~5.9.3",
-    "vite": "^7.2.4",
-    "vite-plugin-electron": "^0.28.0",
+    "vite": "^8.0.8",
+    "vite-plugin-electron": "^0.29.1",
     "vite-plugin-electron-renderer": "^0.14.0",
     "vitest": "^4.0.18"
+  },
+  "pnpm": {
+    "overrides": {
+      "axios": "^1.15.0",
+      "undici": "^7.25.0",
+      "minimatch": "^10.2.5",
+      "rollup": "^4.60.1",
+      "picomatch": "^4.0.4",
+      "path-to-regexp": "^8.4.2",
+      "lodash": "^4.18.1",
+      "@xmldom/xmldom": "^0.8.12",
+      "brace-expansion": "^5.0.5",
+      "file-type": "^21.3.4",
+      "underscore": "^1.13.8",
+      "tar": "^7.5.8",
+      "@hono/node-server": "^1.19.10",
+      "basic-ftp": "^5.2.2",
+      "follow-redirects": "^1.15.12"
+    }
   }
 }

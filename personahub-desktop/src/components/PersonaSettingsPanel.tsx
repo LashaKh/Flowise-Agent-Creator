@@ -50,6 +50,10 @@ export default function PersonaSettingsPanel({
   const [voiceId, setVoiceId] = useState<string | undefined>(undefined);
   const [avatarStyleId, setAvatarStyleId] = useState<AvatarStyleId>('face-warm');
   const [avatarAccentHue, setAvatarAccentHue] = useState<number>(0);
+  // Persona memory — a user-maintained note shared across all sessions. It
+  // gets injected into the system prompt on every send so the persona
+  // remembers facts even after starting a fresh chat.
+  const [personaMemory, setPersonaMemory] = useState<string>('');
 
   // Load persona data + knowledge docs on mount
   useEffect(() => {
@@ -68,6 +72,7 @@ export default function PersonaSettingsPanel({
       setVoiceId(p.settings.voiceId);
       setAvatarStyleId((p.settings.avatarStyleId as AvatarStyleId) || 'face-warm');
       setAvatarAccentHue(p.settings.avatarAccentHue ?? 0);
+      setPersonaMemory(p.settings.personaMemory ?? '');
 
       const docs = await window.electronAPI.agent.listKnowledgeDocs(personaId);
       setKnowledgeDocs(docs);
@@ -94,8 +99,12 @@ export default function PersonaSettingsPanel({
           voiceId,
           avatarStyleId,
           avatarAccentHue,
+          personaMemory: personaMemory.trim() || undefined,
         },
       });
+      // Broadcast so the ChatWindow avatar/voice picks up changes without
+      // waiting for a view switch or a manual reload.
+      window.dispatchEvent(new CustomEvent('persona-updated', { detail: { personaId } }));
       onSaved();
       onClose();
     } catch (err) {
@@ -191,7 +200,7 @@ export default function PersonaSettingsPanel({
           </div>
           <button
             onClick={onClose}
-            className="text-gray-500 hover:text-white text-2xl leading-none w-9 h-9 flex items-center justify-center rounded-lg hover:bg-gray-800 transition-colors shrink-0"
+            className="text-gray-500 hover:text-white text-2xl leading-none w-11 h-11 flex items-center justify-center rounded-lg hover:bg-gray-800 transition-colors shrink-0"
             aria-label="Close"
           >
             ×
@@ -301,6 +310,26 @@ export default function PersonaSettingsPanel({
                 </select>
               </div>
             </SectionCard>
+
+            {/* Persona Memory card (full width) */}
+            <div className="lg:col-span-2">
+              <SectionCard title="Persona Memory" icon="🧠">
+                <p className="text-[11px] text-gray-500 mb-2">
+                  Facts this persona should remember across all your chats — your name, preferences, context about you.
+                  Injected into every new conversation so the persona doesn&apos;t forget between sessions.
+                </p>
+                <textarea
+                  value={personaMemory}
+                  onChange={(e) => setPersonaMemory(e.target.value.slice(0, 2000))}
+                  rows={5}
+                  placeholder="e.g. The user's name is Alex. Prefers concise answers. Works as a backend engineer."
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-300 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 resize-y"
+                />
+                <div className="text-[10px] text-gray-600 text-right mt-1">
+                  {personaMemory.length} / 2000
+                </div>
+              </SectionCard>
+            </div>
 
             {/* System Prompt card (full width) */}
             <div className="lg:col-span-2">

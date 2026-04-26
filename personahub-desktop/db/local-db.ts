@@ -142,6 +142,7 @@ interface ChatSessionRow {
   id: string;
   persona_id: string;
   session_id: string;
+  title: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -151,6 +152,7 @@ function rowToSession(row: ChatSessionRow): ChatSession {
     id: row.id,
     personaId: row.persona_id,
     sessionId: row.session_id,
+    title: row.title ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -329,8 +331,27 @@ export class LocalDB {
     return rows.map(rowToPersona);
   }
 
+  /**
+   * Cascading delete for a persona. All owned rows are removed in one
+   * SQLite transaction so a partial failure (disk full, interrupt) either
+   * leaves the persona fully intact OR fully deleted — never half.
+   *
+   * Callers MUST still handle filesystem cleanup (SOUL.md, AGENTS.md,
+   * IDENTITY.md, knowledge/*.md under ~/.openclaw/agents/{id}/) — that
+   * lives outside the DB. The main-process `persona:delete` IPC does this.
+   */
   deletePersona(id: string): void {
-    this.db.prepare('DELETE FROM persona_configs WHERE id = ?').run(id);
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM knowledge_documents WHERE persona_id = ?').run(id);
+      this.db.prepare('DELETE FROM permission_memory WHERE persona_id = ?').run(id);
+      this.db.prepare(`DELETE FROM backup_records WHERE action_log_id IN
+        (SELECT id FROM action_log_entries WHERE persona_id = ?)`).run(id);
+      this.db.prepare('DELETE FROM action_log_entries WHERE persona_id = ?').run(id);
+      this.db.prepare(`DELETE FROM chat_messages WHERE session_id IN
+        (SELECT id FROM chat_sessions WHERE persona_id = ?)`).run(id);
+      this.db.prepare('DELETE FROM chat_sessions WHERE persona_id = ?').run(id);
+      this.db.prepare('DELETE FROM persona_configs WHERE id = ?').run(id);
+    })();
   }
 
   // ── ActionLogEntry ──────────────────────────────
@@ -434,6 +455,28 @@ export class LocalDB {
     return row ? rowToSession(row) : undefined;
   }
 
+  getChatSessionById(id: string): ChatSession | undefined {
+    const row = this.db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(id) as ChatSessionRow | undefined;
+    return row ? rowToSession(row) : undefined;
+  }
+
+  updateChatSessionTitle(id: string, title: string): void {
+    this.db.prepare('UPDATE chat_sessions SET title = ?, updated_at = ? WHERE id = ?')
+      .run(title, new Date().toISOString(), id);
+  }
+
+  /**
+   * Delete a session and all of its messages atomically. Returns the number
+   * of messages removed (useful for the UI's undo toast label).
+   */
+  deleteChatSession(id: string): { messagesDeleted: number } {
+    return this.db.transaction(() => {
+      const res = this.db.prepare('DELETE FROM chat_messages WHERE session_id = ?').run(id);
+      this.db.prepare('DELETE FROM chat_sessions WHERE id = ?').run(id);
+      return { messagesDeleted: Number(res.changes) };
+    })();
+  }
+
   // ── ChatMessage ─────────────────────────────────
 
   insertChatMessage(msg: Omit<ChatMessage, 'id' | 'createdAt'>): ChatMessage {
@@ -455,6 +498,21 @@ export class LocalDB {
   getChatMessagesBySession(sessionId: string): ChatMessage[] {
     const rows = this.db.prepare('SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC').all(sessionId) as ChatMessageRow[];
     return rows.map(rowToMessage);
+  }
+
+  // Last N messages across all sessions of a persona, chronological order.
+  // Used by the OpenRouter path to give the model conversation memory
+  // (OpenClaw keeps history server-side, so it doesn't need this).
+  getRecentMessagesByPersona(personaId: string, limit = 20): ChatMessage[] {
+    const rows = this.db.prepare(`
+      SELECT m.* FROM chat_messages m
+      JOIN chat_sessions s ON m.session_id = s.id
+      WHERE s.persona_id = ?
+      ORDER BY m.created_at DESC
+      LIMIT ?
+    `).all(personaId, limit) as ChatMessageRow[];
+    // Reverse to chronological order
+    return rows.map(rowToMessage).reverse();
   }
 
   updateMessageStreaming(id: string, content: string, isStreaming: boolean): void {
@@ -559,10 +617,15 @@ export class LocalDB {
     return rows.map(rowToKnowledgeDoc);
   }
 
-  deleteKnowledgeDoc(id: string): KnowledgeDocument | undefined {
+  getKnowledgeDocById(id: string): KnowledgeDocument | undefined {
     const row = this.db.prepare('SELECT * FROM knowledge_documents WHERE id = ?').get(id) as KnowledgeDocRow | undefined;
-    if (!row) return undefined;
+    return row ? rowToKnowledgeDoc(row) : undefined;
+  }
+
+  deleteKnowledgeDoc(id: string): KnowledgeDocument | undefined {
+    const doc = this.getKnowledgeDocById(id);
+    if (!doc) return undefined;
     this.db.prepare('DELETE FROM knowledge_documents WHERE id = ?').run(id);
-    return rowToKnowledgeDoc(row);
+    return doc;
   }
 }

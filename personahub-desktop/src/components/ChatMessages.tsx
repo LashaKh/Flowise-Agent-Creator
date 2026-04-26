@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import type { ChatMessage } from '../types';
 
 interface ChatMessagesProps {
@@ -6,19 +7,59 @@ interface ChatMessagesProps {
   isStreaming: boolean;
 }
 
+/**
+ * QA finding PERF4: previously rendered every message in a single DOM list.
+ * With 1k+ messages this hits React diff + layout costs hard. Virtuoso
+ * renders only visible rows + a small buffer. Auto-scroll-to-bottom is
+ * preserved via `followOutput: 'smooth'` which also handles streaming:
+ * as deltas arrive, Virtuoso keeps the view pinned to the last row.
+ */
 export default function ChatMessages({ messages, isStreaming }: ChatMessagesProps) {
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
 
-  // Auto-scroll to bottom when new messages arrive or content streams in
+  // Under a tiny message count Virtuoso adds visual flicker and its scroll
+  // attachment is noticeably janky compared to plain flow layout. Keep the
+  // original path for short conversations; virtualize only past the threshold.
+  const shouldVirtualize = messages.length > 100;
+
+  // Auto-scroll for the non-virtualized path.
+  const bottomRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isStreaming]);
+    if (!shouldVirtualize) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, isStreaming, shouldVirtualize]);
 
   if (messages.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <p className="text-gray-500 text-sm">Send a message to start the conversation.</p>
       </div>
+    );
+  }
+
+  if (shouldVirtualize) {
+    return (
+      <Virtuoso
+        ref={virtuosoRef}
+        data={messages}
+        className="flex-1"
+        followOutput="smooth"
+        initialTopMostItemIndex={Math.max(messages.length - 1, 0)}
+        itemContent={(_index, msg) => (
+          <div className="px-4 py-2">
+            <MessageBubble message={msg} />
+          </div>
+        )}
+        components={{
+          Footer: () =>
+            isStreaming && messages[messages.length - 1]?.role !== 'assistant' ? (
+              <div className="px-4 pb-4">
+                <StreamingIndicator />
+              </div>
+            ) : null,
+        }}
+      />
     );
   }
 

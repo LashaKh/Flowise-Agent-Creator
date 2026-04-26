@@ -2,8 +2,18 @@ import { useMemo, type ReactNode } from 'react';
 
 type Platform = 'mac' | 'windows' | 'linux';
 
+// Single source of truth for download filenames. Bump this on each release
+// AFTER publishing the new GitHub release with matching artifact names.
+const APP_VERSION = '0.3.0';
+
 const GITHUB_RELEASE_BASE =
   'https://github.com/LashaKh/Flowise-Agent-Creator/releases/latest/download';
+
+// Mac builds ship for both arm64 (Apple Silicon) and x64 (Intel). The
+// primary download is arm64 (most users on new hardware). Intel Mac users
+// get a secondary link in the install-note section below.
+const MAC_ARM64_FILE = `PersonaHub-Desktop-${APP_VERSION}-arm64.dmg`;
+const MAC_X64_FILE = `PersonaHub-Desktop-${APP_VERSION}-x64.dmg`;
 
 const PLATFORMS: {
   id: Platform;
@@ -22,10 +32,10 @@ const PLATFORMS: {
         <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z" />
       </svg>
     ),
-    fileName: 'PersonaHub-Desktop-0.2.1.dmg',
+    fileName: MAC_ARM64_FILE,
     ext: '.dmg',
     size: '~120 MB',
-    requirements: 'macOS 12 (Monterey) or later',
+    requirements: 'macOS 12 (Monterey) or later — Apple Silicon',
   },
   {
     id: 'windows',
@@ -35,7 +45,7 @@ const PLATFORMS: {
         <path d="M3 12V6.75l6-1.32v6.48L3 12zm17-9v8.75l-10 .15V5.21L20 3zM3 13l6 .09v6.81l-6-1.15V13zm7 .25l10 .15V21l-10-1.91V13.25z" />
       </svg>
     ),
-    fileName: 'PersonaHub-Desktop-Setup-0.2.1.exe',
+    fileName: `PersonaHub-Desktop-Setup-${APP_VERSION}.exe`,
     ext: '.exe',
     size: '~90 MB',
     requirements: 'Windows 10 or later (64-bit)',
@@ -48,7 +58,7 @@ const PLATFORMS: {
         <path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.368 1.884 1.43.868.074 1.32-.283 1.543-.734.532-1.078.547-2.246.322-3.26 1.063-.976 1.682-2.33 1.682-3.825 0-1.502-.625-2.866-1.702-3.845.021-.085.065-.156.084-.245.06-.345.099-.689.122-1.032.12-.987.146-2.322-.467-3.564-.701-1.423-1.847-2.268-2.93-2.665C14.077.137 13.283 0 12.504 0z" />
       </svg>
     ),
-    fileName: 'PersonaHub-Desktop-0.2.1.AppImage',
+    fileName: `PersonaHub-Desktop-${APP_VERSION}.AppImage`,
     ext: '.AppImage',
     size: '~100 MB',
     requirements: 'Ubuntu 20.04+ / Fedora 36+ (64-bit)',
@@ -168,6 +178,32 @@ export function DownloadApp() {
           <p className="text-xs text-gray-500 font-body mt-2">
             This removes the download quarantine flag. You only need to do this once after installing.
           </p>
+          <p className="text-xs text-gray-400 font-body mt-4 pt-4 border-t border-white/5">
+            On an Intel Mac (2019 or earlier)?{' '}
+            <a
+              href={`${GITHUB_RELEASE_BASE}/${MAC_X64_FILE}`}
+              className="text-cosmic-cyan hover:text-cosmic-cyan/80 underline transition-colors"
+            >
+              Download the Intel build instead
+            </a>
+            .
+          </p>
+        </section>
+      )}
+
+      {/* Windows Installation Note */}
+      {userOS === 'windows' && (
+        <section className="glass-strong rounded-2xl p-6 card-cosmic border border-amber-500/30">
+          <h3 className="text-base font-display font-bold text-amber-400 mb-3 flex items-center gap-2">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+            </svg>
+            Windows: SmartScreen Warning
+          </h3>
+          <p className="text-sm text-gray-400 font-body">
+            Windows may show a <span className="text-white font-semibold">"Windows protected your PC"</span> dialog because the installer isn't yet code-signed. Click{' '}
+            <span className="text-white font-semibold">"More info"</span> → <span className="text-white font-semibold">"Run anyway"</span> to install. This is a one-time step.
+          </p>
         </section>
       )}
 
@@ -218,7 +254,7 @@ export function DownloadApp() {
 
       {/* Version info */}
       <p className="text-center text-xs text-gray-600 font-body">
-        Version 0.2.1 &middot; Open source on{' '}
+        Version {APP_VERSION} &middot; Open source on{' '}
         <a
           href="https://github.com/LashaKh/Flowise-Agent-Creator"
           target="_blank"

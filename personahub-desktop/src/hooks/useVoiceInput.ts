@@ -41,9 +41,11 @@ export function useVoiceInput(options: UseVoiceInputOptions = {}): UseVoiceInput
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelledRef = useRef(false);
   const onTranscriptRef = useRef(onTranscript);
+  const micStateRef = useRef<MicState>(micState);
 
   // Keep callback ref in sync
   useEffect(() => { onTranscriptRef.current = onTranscript; }, [onTranscript]);
+  useEffect(() => { micStateRef.current = micState; }, [micState]);
 
   const cleanup = useCallback(() => {
     if (timeoutRef.current) {
@@ -118,6 +120,16 @@ export function useVoiceInput(options: UseVoiceInputOptions = {}): UseVoiceInput
         } catch (err) {
           setError(err instanceof Error ? err.message : 'Transcription failed');
           setMicState('error');
+          // QA finding EC6: fully release the recorder ref so a subsequent
+          // startRecording() builds a fresh recorder instead of finding a
+          // stale one lingering in memory.
+          recorderRef.current = null;
+          // Auto-recover to idle after a short delay so the user isn't stuck
+          // in the error state forever — the error text is still displayed
+          // via `error` state, but the mic becomes usable again.
+          setTimeout(() => {
+            setMicState((s) => (s === 'error' ? 'idle' : s));
+          }, 2000);
         }
       };
 
@@ -174,11 +186,16 @@ export function useVoiceInput(options: UseVoiceInputOptions = {}): UseVoiceInput
     return () => window.removeEventListener('blur', handleBlur);
   }, [autoStopOnBlur, micState, stopRecording]);
 
-  // Listen for power events (lock screen / suspend)
+  // Listen for power events (lock screen / suspend).
+  // Use micStateRef + cancelRecording ref so listener binds once, not on every
+  // micState change (avoids add/remove churn during recording).
+  const cancelRecordingRef = useRef(cancelRecording);
+  useEffect(() => { cancelRecordingRef.current = cancelRecording; }, [cancelRecording]);
+
   useEffect(() => {
     function handlePowerEvent() {
-      if (micState === 'recording') {
-        cancelRecording();
+      if (micStateRef.current === 'recording') {
+        cancelRecordingRef.current();
       }
     }
     window.addEventListener('power:lock' as string, handlePowerEvent);
@@ -187,7 +204,7 @@ export function useVoiceInput(options: UseVoiceInputOptions = {}): UseVoiceInput
       window.removeEventListener('power:lock' as string, handlePowerEvent);
       window.removeEventListener('power:suspend' as string, handlePowerEvent);
     };
-  }, [micState, cancelRecording]);
+  }, []);
 
   // Cleanup on unmount
   useEffect(() => cleanup, [cleanup]);

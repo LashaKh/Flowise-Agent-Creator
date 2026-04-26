@@ -44,6 +44,10 @@ export interface PersonaSettings {
   avatarEnabled?: boolean;
   avatarStyleId?: string;
   avatarAccentHue?: number;
+  // Persona-level memory shared across all sessions. Injected into the
+  // system prompt so the persona remembers user-provided facts even after
+  // starting a fresh session.
+  personaMemory?: string;
 }
 
 export interface PathPermission {
@@ -154,6 +158,7 @@ export interface ChatSession {
   id: string;
   personaId: string;
   sessionId: string;
+  title?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -201,7 +206,7 @@ export interface ElectronAPI {
     signIn: (email: string, password: string) => Promise<AuthState>;
     refresh: () => Promise<AuthState>;
     logout: () => Promise<void>;
-    getToken: () => Promise<string | null>;
+    // getToken is NOT exposed to the renderer — tokens stay in main process.
     storeToken: (token: string) => Promise<void>;
     clearToken: () => Promise<void>;
     onCallback: (callback: (result: AuthState) => void) => () => void;
@@ -209,6 +214,11 @@ export interface ElectronAPI {
   // Typed chat operations — no raw SQL exposed.
   chat: {
     getOrCreateSession: (personaId: string) => Promise<{ sessionId: string }>;
+    createSession: (personaId: string) => Promise<{ sessionId: string }>;
+    listSessions: (personaId: string) => Promise<ChatSession[]>;
+    renameSession: (sessionId: string, title: string) => Promise<{ ok: boolean }>;
+    deleteSession: (sessionId: string) => Promise<{ messagesDeleted: number }>;
+    autoTitle: (sessionId: string, userMessage: string, assistantReply: string) => Promise<{ title: string | null }>;
     loadMessages: (sessionId: string) => Promise<ChatMessage[]>;
     saveMessage: (msg: Omit<ChatMessage, 'createdAt'>) => Promise<{ id: string }>;
     getLastMessage: (personaId: string) => Promise<string | null>;
@@ -224,7 +234,7 @@ export interface ElectronAPI {
     onConfirmRequest: (callback: (request: ConfirmationRequest) => void) => () => void;
   };
   agent: {
-    sendMessage: (personaId: string, message: string) => Promise<void>;
+    sendMessage: (personaId: string, sessionId: string, message: string) => Promise<void>;
     createPersona: (name: string, description: string, options?: { temperature?: number; confirmationLevel?: string; modelName?: string }) => Promise<{ id: string; name: string; systemPrompt: string }>;
     listPersonas: () => Promise<PersonaConfig[]>;
     sidebarList: () => Promise<Array<{ id: string; name: string; settings: string | null }>>;
@@ -240,6 +250,8 @@ export interface ElectronAPI {
     getStats: (personaId: string) => Promise<{ messageCount: number; lastActiveAt: string | null }>;
     onResponse: (callback: (chunk: { personaId: string; content: string; done: boolean }) => void) => () => void;
     onToolCall: (callback: (toolCall: { personaId: string; tool: string; action: string }) => void) => () => void;
+    /** Fires when the main process deletes a persona — lets hooks cancel in-flight work (QA finding INT4). */
+    onPersonaDeleted: (callback: (personaId: string) => void) => () => void;
     stopGeneration: (personaId: string) => Promise<void>;
     uploadKnowledgeDoc: (personaId: string) => Promise<KnowledgeDocument | null>;
     listKnowledgeDocs: (personaId: string) => Promise<KnowledgeDocument[]>;
@@ -261,6 +273,7 @@ export interface ElectronAPI {
       provider: 'anthropic' | 'google' | null;
       keyPreview: string | null;
     }>;
+    validateKey: (apiKey: string, provider: string) => Promise<{ ok: boolean; error?: string }>;
   };
   window: {
     show: () => Promise<void>;
@@ -280,7 +293,7 @@ export interface ElectronAPI {
   };
   voice: {
     storeKey: (providerId: string, apiKey: string) => Promise<boolean>;
-    getKey: (providerId: string) => Promise<string | null>;
+    // getKey is NOT exposed to the renderer — decrypted keys stay in main process.
     hasKey: (providerId: string) => Promise<boolean>;
     deleteKey: (providerId: string) => Promise<boolean>;
     getPrefs: () => Promise<GlobalVoicePrefs>;
@@ -295,6 +308,19 @@ export interface ElectronAPI {
       totalRequests: number;
       perModel: Record<string, { costUsd: number; tokens: number; requests: number }>;
     }>;
+  };
+  /**
+   * Dev-only perf snapshot. In packaged builds the handler returns {} so the
+   * renderer can probe safely without needing a dev/prod branch. Used by the
+   * QA performance profiler (CLAUDE.md PERF-INFRA).
+   */
+  perf: {
+    memory: () => Promise<Partial<{
+      rss: number;
+      heapTotal: number;
+      heapUsed: number;
+      external: number;
+    }>>;
   };
 }
 

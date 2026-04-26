@@ -133,15 +133,24 @@ export function createTtsRouter(options: TtsRouterOptions): TtsRouter {
       utterance.rate = options.speed ?? 1.0;
       currentUtterance = utterance;
 
-      // Try to find a local voice — but don't bail if voices list is empty.
-      // On macOS/Electron, getVoices() can return [] initially (async load),
-      // but speechSynthesis.speak() still works with the OS default voice.
+      // Pick the user-selected voice, then fall back gracefully. On macOS/
+      // Electron, getVoices() can return [] initially (async load), in which
+      // case we leave `utterance.voice` unset and let the OS default speak.
+      //
+      // VoicePicker stores the SpeechSynthesisVoice's `name` field as
+      // voiceId, so that's our primary key. Some platforms serialize to
+      // `voiceURI` instead — check that as a secondary fallback.
       const allVoices = speechSynthesis.getVoices();
       const localVoices = allVoices.filter((v) => v.localService);
-      if (localVoices.length > 0 && localVoices[0]) {
-        utterance.voice = localVoices[0];
-      }
-      // Don't return false on empty voices — let the OS use its default
+      const chosen =
+        (options.voiceId && allVoices.find((v) => v.name === options.voiceId)) ||
+        (options.voiceId && allVoices.find((v) => v.voiceURI === options.voiceId)) ||
+        // QA finding EC1 LOW: if the system has no local voices (some CI
+        // environments, fresh macOS without downloaded voices), fall back
+        // to ANY voice before giving up on voice selection.
+        localVoices[0] ||
+        allVoices[0];
+      if (chosen) utterance.voice = chosen;
 
       utterance.onstart = () => {
         switchProvider('web-speech');

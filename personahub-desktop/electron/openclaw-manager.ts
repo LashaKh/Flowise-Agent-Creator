@@ -31,6 +31,20 @@ const OPENCLAW_CONFIG_PATH = path.join(OPENCLAW_CONFIG_DIR, 'openclaw.json');
 
 let gatewayProcess: ChildProcess | null = null;
 let installedCache: boolean | null = null;
+// Most recent fatal-startup reason captured from stderr. Set by the
+// stderr handler when it sees EADDRINUSE etc. Read by main.ts to enrich
+// the user-visible error message instead of the generic "failed to start
+// within 30 seconds".
+let lastStartupError: string | null = null;
+
+/**
+ * Get the most recent gateway startup failure reason — used by the IPC
+ * handler / wizard to surface a more helpful error than "30s timeout".
+ * Returns null if there's no recent failure recorded.
+ */
+export function getLastStartupError(): string | null {
+  return lastStartupError;
+}
 
 // ─── Path Helper ────────────────────────────────────
 
@@ -219,6 +233,10 @@ export async function startGateway(): Promise<void> {
 
   console.log(`[openclaw] starting gateway: ${process.execPath} ${entryPath} gateway --port ${GATEWAY_PORT}`);
 
+  // Reset previous startup error — we're trying again, give the new attempt
+  // a clean slate before stderr handler potentially sets it.
+  lastStartupError = null;
+
   gatewayProcess = spawn(
     process.execPath,
     [entryPath, 'gateway', '--port', String(GATEWAY_PORT)],
@@ -230,15 +248,25 @@ export async function startGateway(): Promise<void> {
   );
 
   gatewayProcess.stdout?.on('data', (data: Buffer) => {
-    console.log(`[openclaw:stdout] ${data.toString().trim()}`);
+    if (process.env.DEBUG_AGENT) console.debug(`[openclaw:stdout] ${data.toString().trim()}`);
   });
 
   gatewayProcess.stderr?.on('data', (data: Buffer) => {
-    console.error(`[openclaw:stderr] ${data.toString().trim()}`);
+    const text = data.toString().trim();
+    console.error(`[openclaw:stderr] ${text}`);
+    // Detect "port already in use" specifically — this is the most common
+    // gateway start failure (a previous PersonaHub instance, or a dev tool
+    // that grabbed the port). Surface a clear remediation message.
+    if (/EADDRINUSE|address already in use/i.test(text)) {
+      lastStartupError = `Port ${GATEWAY_PORT} is already in use. This usually means another PersonaHub instance is running — quit it and try again. If you don't see another instance, restart your computer to free the port.`;
+    }
   });
 
   gatewayProcess.on('error', (err) => {
     console.error('[openclaw] gateway spawn error:', err.message);
+    if (!lastStartupError) {
+      lastStartupError = `Failed to launch gateway process: ${err.message}`;
+    }
     gatewayProcess = null;
   });
 

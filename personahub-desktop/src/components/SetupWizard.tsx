@@ -258,6 +258,14 @@ function InstallingStep({
   async function startEngine() {
     onError(null);
     try {
+      // Validate the key against the provider FIRST so a typo or revoked
+      // key surfaces here ("key was rejected") instead of dying later
+      // with a cryptic stream error on the user's first chat message.
+      const validation = await window.electronAPI?.openclaw.validateKey(apiKey, provider);
+      if (validation && !validation.ok) {
+        onError(validation.error || 'API key was rejected.');
+        return;
+      }
       await window.electronAPI?.openclaw.install(apiKey, provider);
       onComplete();
     } catch (err) {

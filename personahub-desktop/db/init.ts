@@ -10,10 +10,24 @@
  *    code running in the renderer — see audit BLOCKER P1-2).
  */
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 import Database from 'better-sqlite3';
 import { LocalDB } from './local-db';
 import { handleValidated } from '../electron/ipc-validation';
 import type { UserPreferences, ChatMessage } from '../src/types';
+
+/**
+ * Pref-change bus. Other main-process modules subscribe to react to user
+ * pref edits in real time — e.g. the globalShortcut re-registers when the
+ * hotkey string changes, and setLoginItemSettings is called again when the
+ * "Start on Login" toggle flips. Without this, prefs would only apply on
+ * the NEXT app start (the pre-audit behavior).
+ */
+export const prefsBus = new EventEmitter();
+export interface PrefsChangeEvent {
+  updated: Partial<UserPreferences>;
+  current: UserPreferences;
+}
 
 let localDB: LocalDB | null = null;
 
@@ -78,6 +92,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   id TEXT PRIMARY KEY,
   persona_id TEXT REFERENCES persona_configs(id),
   session_id TEXT,
+  title TEXT,
   created_at TEXT,
   updated_at TEXT
 );
@@ -126,6 +141,64 @@ CREATE TABLE IF NOT EXISTS knowledge_documents (
 `;
 
 /**
+ * Ordered schema migrations. Append a new entry for every schema change —
+ * never edit a published one (changing a migration mid-release would skip
+ * it for users who already ran the original). The runner records each
+ * applied version in `schema_migrations` so re-runs are idempotent.
+ *
+ * Use raw SQL — keep migrations tiny and readable. Reference: PRAGMA
+ * user_version is intentionally NOT used because it can't carry per-row
+ * metadata for forensics ("when was this run, by what version of the app?").
+ */
+interface Migration {
+  version: number;
+  description: string;
+  sql: string;
+}
+
+const MIGRATIONS: Migration[] = [
+  {
+    version: 1,
+    description: 'add chat_sessions.title for session auto-titling',
+    sql: 'ALTER TABLE chat_sessions ADD COLUMN title TEXT',
+  },
+  // future schema changes go here — append, never edit
+];
+
+function runMigrations(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version INTEGER PRIMARY KEY,
+      description TEXT,
+      applied_at TEXT
+    );
+  `);
+
+  const appliedRows = db.prepare('SELECT version FROM schema_migrations').all() as Array<{ version: number }>;
+  const applied = new Set(appliedRows.map((r) => r.version));
+
+  for (const m of MIGRATIONS) {
+    if (applied.has(m.version)) continue;
+    const tx = db.transaction(() => {
+      // The "duplicate column" / "already exists" path for users upgrading
+      // from versions that ran the legacy try/catch ALTER. Swallow only
+      // those specific error texts — anything else is a real problem.
+      try {
+        db.exec(m.sql);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const benign = /duplicate column|already exists/i.test(msg);
+        if (!benign) throw err;
+      }
+      db.prepare(
+        'INSERT INTO schema_migrations (version, description, applied_at) VALUES (?, ?, ?)',
+      ).run(m.version, m.description, new Date().toISOString());
+    });
+    tx();
+  }
+}
+
+/**
  * Initialize the database. Call this once during app startup.
  * @param userDataPath - Electron's app.getPath('userData'), e.g. ~/Library/Application Support/PersonaHub
  * @returns The initialized LocalDB instance
@@ -142,10 +215,14 @@ export function initDatabase(userDataPath: string): LocalDB {
   // 2. Execute the schema (IF NOT EXISTS makes this safe to re-run)
   db.exec(SCHEMA);
 
-  // 3. Wrap in our typed layer
+  // 3. Run any pending migrations — the runner records what's applied so
+  // subsequent runs are no-ops.
+  runMigrations(db);
+
+  // 4. Wrap in our typed layer
   localDB = new LocalDB(db);
 
-  // 4. Register IPC handlers for renderer access
+  // 5. Register IPC handlers for renderer access
   registerIpcHandlers(localDB);
 
   return localDB;
@@ -170,12 +247,38 @@ function registerIpcHandlers(localDB: LocalDB) {
   const { db } = localDB;
 
   // ── Chat ────────────────────────────────────────
-  // Get-or-create the latest session for a persona.
+  // Get-or-create the latest session for a persona (default entry point —
+  // resumes the most recent conversation).
   handleValidated('chat:getOrCreateSession', (_event, personaId: string) => {
     const existing = localDB.getLatestChatSession(personaId);
     if (existing) return { sessionId: existing.id };
     const created = localDB.createChatSession(personaId);
     return { sessionId: created.id };
+  });
+
+  // Always create a NEW session for this persona. Used by the "+ New chat"
+  // button in the chat header.
+  handleValidated('chat:createSession', (_event, personaId: string) => {
+    const created = localDB.createChatSession(personaId);
+    return { sessionId: created.id };
+  });
+
+  // List all sessions for a persona, most recently updated first.
+  handleValidated('chat:listSessions', (_event, personaId: string) => {
+    return localDB.getChatSessionsByPersona(personaId);
+  });
+
+  // Rename a session (used by auto-title after first reply + user rename).
+  handleValidated('chat:renameSession', (_event, sessionId: string, title: string) => {
+    const trimmed = String(title ?? '').slice(0, 120).trim();
+    if (!trimmed) return { ok: false };
+    localDB.updateChatSessionTitle(sessionId, trimmed);
+    return { ok: true };
+  });
+
+  // Delete a session (and cascade its messages).
+  handleValidated('chat:deleteSession', (_event, sessionId: string) => {
+    return localDB.deleteChatSession(sessionId);
   });
 
   // Load all messages for a session (in chronological order).
@@ -252,7 +355,11 @@ function registerIpcHandlers(localDB: LocalDB) {
   });
 
   handleValidated('prefs:save', (_event, updates: Partial<Omit<UserPreferences, 'id' | 'userId'>>) => {
-    return localDB.updatePreferences('default', updates);
+    const current = localDB.updatePreferences('default', updates);
+    // Broadcast so main-process modules (shortcuts, login-item, theme
+    // propagators, etc.) can react without requiring an app restart.
+    prefsBus.emit('changed', { updated: updates, current } as PrefsChangeEvent);
+    return current;
   });
 }
 

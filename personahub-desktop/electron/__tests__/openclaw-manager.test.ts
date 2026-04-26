@@ -9,6 +9,11 @@ vi.mock('electron', () => ({
 }));
 
 vi.mock('node:child_process', () => ({
+  // Vitest 4 strict ESM — the factory must expose a `default` export for
+  // `import cp from 'node:child_process'` AND named exports for
+  // `import { spawn } from 'node:child_process'`. Mirrors the pattern above
+  // for 'node:fs'.
+  default: { spawn: vi.fn() },
   spawn: vi.fn(),
 }));
 
@@ -66,6 +71,11 @@ describe('checkInstallation', () => {
 
   it('returns true when both config and entry script exist', async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true);
+    // checkInstallation also verifies a configured provider via getConfiguredProvider,
+    // which reads openclaw.json. Provide a config with a non-empty anthropic key.
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ models: { providers: { anthropic: { apiKey: 'test-key' } } } })
+    );
     const result = await checkInstallation();
     expect(result).toBe(true);
   });

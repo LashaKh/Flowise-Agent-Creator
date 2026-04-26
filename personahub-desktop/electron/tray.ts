@@ -11,21 +11,38 @@ const __dirname = path.dirname(__filename);
 
 let tray: Tray | null = null;
 
-export function initTray(mainWindow: BrowserWindow) {
-  // Create a small icon (16x16 on macOS, 32x32 on Windows/Linux)
-  const iconPath = path.join(__dirname, '../public/tray-icon.png');
+/**
+ * Initialize the system tray. Returns true on success, false if the tray
+ * couldn't be created (missing icon, OS rejection). Callers should fall
+ * back to "close = quit" behavior when this returns false, so the user
+ * isn't stranded with a hidden window they can't restore.
+ */
+export function initTray(mainWindow: BrowserWindow): boolean {
+  // Prefer .ico on Windows (multi-res, crisp on high-DPI); PNG elsewhere.
+  // `new Tray(emptyImage)` throws on Windows — a missing icon must NOT crash
+  // boot. On any failure we log and return false so main.ts can adjust
+  // the close-button behavior.
+  const iconFile = process.platform === 'win32' ? 'tray-icon.ico' : 'tray-icon.png';
+  const iconPath = path.join(__dirname, '../public', iconFile);
   let icon: Electron.NativeImage;
   try {
     icon = nativeImage.createFromPath(iconPath);
     if (icon.isEmpty()) {
-      // Fallback: create a simple colored square
-      icon = nativeImage.createEmpty();
+      console.warn(`[tray] Icon at ${iconPath} loaded empty; skipping tray.`);
+      return false;
     }
-  } catch {
-    icon = nativeImage.createEmpty();
+  } catch (err) {
+    console.warn('[tray] Failed to load icon, skipping tray:', err);
+    return false;
   }
 
-  tray = new Tray(icon);
+  try {
+    tray = new Tray(icon);
+  } catch (err) {
+    console.warn('[tray] Tray constructor failed, skipping tray:', err);
+    tray = null;
+    return false;
+  }
   tray.setToolTip('PersonaHub Desktop');
 
   const contextMenu = Menu.buildFromTemplate([
@@ -65,6 +82,16 @@ export function initTray(mainWindow: BrowserWindow) {
       mainWindow.focus();
     }
   });
+
+  return true;
+}
+
+/**
+ * Returns true if the tray was successfully initialized and is currently
+ * active. Use this to decide whether to hide-on-close or quit-on-close.
+ */
+export function isTrayActive(): boolean {
+  return tray !== null;
 }
 
 export function destroyTray() {

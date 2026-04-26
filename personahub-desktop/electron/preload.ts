@@ -13,7 +13,6 @@ const electronAPI = {
     signIn: (email: string, password: string) => ipcRenderer.invoke('auth:signIn', email, password),
     refresh: () => ipcRenderer.invoke('auth:refresh'),
     logout: () => ipcRenderer.invoke('auth:logout'),
-    getToken: () => ipcRenderer.invoke('auth:getToken'),
     storeToken: (token: string) => ipcRenderer.invoke('auth:storeToken', token),
     clearToken: () => ipcRenderer.invoke('auth:clearToken'),
     onCallback: (callback: (result: unknown) => void) => {
@@ -27,6 +26,16 @@ const electronAPI = {
   chat: {
     getOrCreateSession: (personaId: string) =>
       ipcRenderer.invoke('chat:getOrCreateSession', personaId),
+    createSession: (personaId: string) =>
+      ipcRenderer.invoke('chat:createSession', personaId),
+    listSessions: (personaId: string) =>
+      ipcRenderer.invoke('chat:listSessions', personaId),
+    renameSession: (sessionId: string, title: string) =>
+      ipcRenderer.invoke('chat:renameSession', sessionId, title),
+    deleteSession: (sessionId: string) =>
+      ipcRenderer.invoke('chat:deleteSession', sessionId),
+    autoTitle: (sessionId: string, userMessage: string, assistantReply: string) =>
+      ipcRenderer.invoke('chat:autoTitle', sessionId, userMessage, assistantReply),
     loadMessages: (sessionId: string) =>
       ipcRenderer.invoke('chat:loadMessages', sessionId),
     saveMessage: (msg: Record<string, unknown>) =>
@@ -57,8 +66,8 @@ const electronAPI = {
 
   // ─── Agent ───────────────────────────────────
   agent: {
-    sendMessage: (personaId: string, message: string) =>
-      ipcRenderer.invoke('agent:send', personaId, message),
+    sendMessage: (personaId: string, sessionId: string, message: string) =>
+      ipcRenderer.invoke('agent:send', personaId, sessionId, message),
     createPersona: (name: string, description: string, options?: { temperature?: number; confirmationLevel?: string; modelName?: string }) =>
       ipcRenderer.invoke('persona:create', name, description, options),
     listPersonas: () => ipcRenderer.invoke('persona:list'),
@@ -83,6 +92,11 @@ const electronAPI = {
       const handler = (_e: Electron.IpcRendererEvent, toolCall: unknown) => callback(toolCall);
       ipcRenderer.on('agent:toolCall', handler);
       return () => ipcRenderer.removeListener('agent:toolCall', handler);
+    },
+    onPersonaDeleted: (callback: (personaId: string) => void) => {
+      const handler = (_e: Electron.IpcRendererEvent, personaId: string) => callback(personaId);
+      ipcRenderer.on('persona:deleted', handler);
+      return () => ipcRenderer.removeListener('persona:deleted', handler);
     },
     stopGeneration: (personaId: string) =>
       ipcRenderer.invoke('agent:stop', personaId),
@@ -121,6 +135,8 @@ const electronAPI = {
     checkInstalled: () => ipcRenderer.invoke('openclaw:checkInstalled'),
     install: (apiKey: string, provider: string) => ipcRenderer.invoke('openclaw:install', apiKey, provider),
     detectExisting: () => ipcRenderer.invoke('openclaw:detectExisting'),
+    validateKey: (apiKey: string, provider: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('openclaw:validateKey', apiKey, provider),
   },
 
   // ─── Voice & Avatar TTS ──────────────────────
@@ -138,8 +154,6 @@ const electronAPI = {
   voice: {
     storeKey: (providerId: string, apiKey: string) =>
       ipcRenderer.invoke('voice:storeKey', providerId, apiKey),
-    getKey: (providerId: string) =>
-      ipcRenderer.invoke('voice:getKey', providerId),
     hasKey: (providerId: string) =>
       ipcRenderer.invoke('voice:hasKey', providerId),
     deleteKey: (providerId: string) =>
@@ -153,6 +167,11 @@ const electronAPI = {
   // ─── LLM Usage Stats ─────────────────────────
   llm: {
     getUsage: () => ipcRenderer.invoke('llm:getUsage'),
+  },
+
+  // ─── Dev-only perf profiling (CLAUDE.md alignment, QA PERF-INFRA) ──
+  perf: {
+    memory: () => ipcRenderer.invoke('perf:memory'),
   },
 
   // ─── Window ──────────────────────────────────

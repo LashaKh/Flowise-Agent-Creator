@@ -19,9 +19,9 @@ An AI persona builder on **two platforms**:
 
 ### Desktop App (`personahub-desktop/`)
 - Electron 35 + React 19 + TypeScript + Vite 7 + Tailwind CSS 4
-- OpenClaw v2026.4.7 — local AI gateway on port 18789 (Anthropic Claude + Google Gemini + TTS routing)
+- OpenClaw v2026.4.7 — bundled as `node_modules/openclaw/openclaw.mjs`, runs on port 18789 (Anthropic Claude + Google Gemini + TTS routing)
 - better-sqlite3 for local database
-- Node.js 22 runtime auto-downloaded to `~/.personahub/runtime/`
+- Electron's bundled Node executes the gateway via `process.execPath` + `ELECTRON_RUN_AS_NODE=1`. Nothing is downloaded at runtime; install is offline-capable except for the user's chosen LLM provider.
 - Web Speech API (TTS fallback + STT via SpeechRecognition)
 
 ## Architecture
@@ -274,10 +274,13 @@ flowise-agent-builder/
 
 ## Git Branch Strategy
 
+The repo has NO `main` branch. `1-ai-persona-builder` is the GitHub default branch and the production release line — CI's `desktop-v*` tag trigger publishes installers from this branch directly.
+
 | Branch | Purpose | Status |
 |---|---|---|
-| `main` | Production | Stable, desktop v0.2.1 |
-| `003-voice-avatar` | Voice & avatar feature | Active — all 156 tasks complete, uncommitted |
+| `1-ai-persona-builder` | Production / release line | Active. Tag `desktop-vX.Y.Z` to ship a new installer. |
+| `003-voice-avatar` | Voice & avatar feature | Merged via PR #1 |
+| `2-personahub-desktop` | Earlier desktop work | Merged |
 
 ## GitHub Release
 - Repo: `LashaKh/Flowise-Agent-Creator`

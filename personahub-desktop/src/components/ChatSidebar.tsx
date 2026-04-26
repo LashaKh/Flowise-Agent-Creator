@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import type { ChatSession } from '../types';
 
 interface ChatSidebarProps {
   personas: Array<{
@@ -12,7 +13,15 @@ interface ChatSidebarProps {
     lastActiveAt?: string | null;
   }>;
   activePersonaId: string | null;
+  activeSessionId: string | null;
+  /** Incremented by the parent to force the expanded persona to refetch its sessions. */
+  sessionRefreshKey: number;
+  /** Sessions currently hidden because of a pending-delete undo window. */
+  hiddenSessionIds?: Set<string>;
   onSelectPersona: (personaId: string) => void;
+  onSelectSession: (personaId: string, sessionId: string) => void;
+  onRenameSession: (sessionId: string, title: string) => void;
+  onDeleteSession: (sessionId: string) => void;
   onPersonaCreated: () => void;
   onDeletePersona: (id: string) => void;
   onEditPersona: (id: string) => void;
@@ -24,10 +33,25 @@ interface ChatSidebarProps {
   onImportPersona: (json: string) => void;
 }
 
+/** Format a session title with a timestamp fallback when no title was set. */
+function sessionLabel(s: ChatSession): string {
+  if (s.title) return s.title;
+  const d = new Date(s.updatedAt || s.createdAt);
+  const date = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  return `New chat · ${date}, ${time}`;
+}
+
 export default function ChatSidebar({
   personas,
   activePersonaId,
+  activeSessionId,
+  sessionRefreshKey,
+  hiddenSessionIds,
   onSelectPersona,
+  onSelectSession,
+  onRenameSession,
+  onDeleteSession,
   onPersonaCreated,
   onDeletePersona,
   onEditPersona,
@@ -50,11 +74,26 @@ export default function ChatSidebar({
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
 
+  // Session context menu (separate from persona menu — different actions).
+  const [sessionMenu, setSessionMenu] = useState<{ sessionId: string; personaId: string; x: number; y: number } | null>(null);
+
   // Inline rename state
   const [editingNameId, setEditingNameId] = useState<string | null>(null);
   const [editingNameValue, setEditingNameValue] = useState('');
   const renameInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Inline rename state for SESSIONS (distinct from persona rename).
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingSessionValue, setEditingSessionValue] = useState('');
+  const sessionRenameInputRef = useRef<HTMLInputElement>(null);
+
+  // Which persona rows are expanded to show their session lists.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // sessionsByPersona[personaId] = full session list for that persona.
+  const [sessionsByPersona, setSessionsByPersona] = useState<Record<string, ChatSession[]>>({});
+  // "Show all" state: personas whose list is fully expanded (beyond the first 5).
+  const [showAllFor, setShowAllFor] = useState<Set<string>>(new Set());
 
   // Sort: pinned first, then alphabetical
   const sorted = [...personas].sort((a, b) => {
@@ -65,10 +104,11 @@ export default function ChatSidebar({
 
   // Close context menu on click-outside or Escape
   useEffect(() => {
-    if (!contextMenu) return;
+    if (!contextMenu && !sessionMenu) return;
     function handleClose(e: MouseEvent | KeyboardEvent) {
       if ('key' in e && e.key !== 'Escape') return;
       setContextMenu(null);
+      setSessionMenu(null);
     }
     document.addEventListener('click', handleClose);
     document.addEventListener('keydown', handleClose);
@@ -76,12 +116,82 @@ export default function ChatSidebar({
       document.removeEventListener('click', handleClose);
       document.removeEventListener('keydown', handleClose);
     };
-  }, [contextMenu]);
+  }, [contextMenu, sessionMenu]);
 
   // Focus rename input when editing starts
   useEffect(() => {
     if (editingNameId) renameInputRef.current?.focus();
   }, [editingNameId]);
+
+  useEffect(() => {
+    if (editingSessionId) sessionRenameInputRef.current?.focus();
+  }, [editingSessionId]);
+
+  // Fetch sessions for expanded personas. Runs on expand AND when the parent
+  // bumps sessionRefreshKey (after create/rename/delete).
+  useEffect(() => {
+    const ids = Array.from(expanded);
+    if (ids.length === 0) return;
+    let cancelled = false;
+    Promise.all(
+      ids.map(async (pid) => {
+        try {
+          const rows = await window.electronAPI.chat.listSessions(pid);
+          return [pid, rows] as const;
+        } catch {
+          return [pid, [] as ChatSession[]] as const;
+        }
+      })
+    ).then((results) => {
+      if (cancelled) return;
+      setSessionsByPersona((prev) => {
+        const next = { ...prev };
+        for (const [pid, rows] of results) next[pid] = rows;
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, sessionRefreshKey]);
+
+  // Auto-expand the active persona so the current session is visible.
+  useEffect(() => {
+    if (activePersonaId) {
+      setExpanded((prev) => {
+        if (prev.has(activePersonaId)) return prev;
+        const next = new Set(prev);
+        next.add(activePersonaId);
+        return next;
+      });
+    }
+  }, [activePersonaId]);
+
+  function toggleExpanded(personaId: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(personaId)) next.delete(personaId);
+      else next.add(personaId);
+      return next;
+    });
+  }
+
+  function handleSessionRenameStart(sessionId: string) {
+    const all = Object.values(sessionsByPersona).flat();
+    const s = all.find((x) => x.id === sessionId);
+    if (!s) return;
+    setEditingSessionId(sessionId);
+    setEditingSessionValue(s.title ?? '');
+    setSessionMenu(null);
+  }
+
+  function handleSessionRenameSubmit() {
+    if (editingSessionId && editingSessionValue.trim()) {
+      onRenameSession(editingSessionId, editingSessionValue.trim());
+    }
+    setEditingSessionId(null);
+    setEditingSessionValue('');
+  }
 
   function resetForm() {
     setNewName('');
@@ -199,22 +309,43 @@ export default function ChatSidebar({
     const isEditing = editingNameId === persona.id;
     const avatarChar = persona.avatar || persona.name.charAt(0).toUpperCase();
     const isEmoji = persona.avatar && persona.avatar.length <= 2;
+    const isExpanded = expanded.has(persona.id);
+    const sessionsRaw = sessionsByPersona[persona.id] ?? [];
+    const sessions = hiddenSessionIds
+      ? sessionsRaw.filter((s) => !hiddenSessionIds.has(s.id))
+      : sessionsRaw;
+    const showAll = showAllFor.has(persona.id);
+    const visibleSessions = showAll ? sessions : sessions.slice(0, 5);
 
     return (
+      <div key={persona.id} className="border-b border-gray-800/50">
       <div
-        key={persona.id}
         role="button"
         tabIndex={0}
         onClick={() => onSelectPersona(persona.id)}
         onContextMenu={(e) => handleContextMenu(e, persona.id)}
         onKeyDown={(e) => { if (e.key === 'Enter') onSelectPersona(persona.id); }}
-        className={`group w-full text-left px-4 py-3 border-b border-gray-800/50 transition-colors cursor-pointer ${
+        // QA finding E2E3: make it visually unambiguous which persona the open
+        // kebab menu is acting on — add a ring when this row owns the menu.
+        data-menu-open={contextMenu?.id === persona.id ? 'true' : undefined}
+        className={`group w-full text-left px-4 py-3 transition-colors cursor-pointer ${
           isActive
             ? 'bg-indigo-600/20 border-l-2 border-l-indigo-500'
             : 'hover:bg-gray-800/50'
-        }`}
+        } ${contextMenu?.id === persona.id ? 'ring-2 ring-indigo-400/50 ring-inset' : ''}`}
       >
         <div className="flex items-center gap-2">
+          {/* Expand/collapse chevron */}
+          <button
+            onClick={(e) => { e.stopPropagation(); toggleExpanded(persona.id); }}
+            className="w-4 h-4 flex items-center justify-center text-gray-500 hover:text-white text-[10px] leading-none flex-shrink-0 transition-transform"
+            style={{ transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
+            aria-label={isExpanded ? 'Collapse' : 'Expand'}
+            title={isExpanded ? 'Hide chats' : 'Show chats'}
+          >
+            ▶
+          </button>
+
           {/* Avatar */}
           <span className="w-6 h-6 rounded-full bg-gray-700 flex items-center justify-center text-xs flex-shrink-0">
             {isEmoji ? persona.avatar : avatarChar}
@@ -253,10 +384,14 @@ export default function ChatSidebar({
             <span className="w-2 h-2 rounded-full bg-indigo-500 flex-shrink-0" />
           )}
 
-          {/* ··· menu button — visible on hover or when this persona's menu is open */}
+          {/* ··· menu button — visible on hover or when this persona's menu is open.
+               QA finding UI9: bumped from w-5 h-5 (20px) to w-8 h-8 (32px) so the
+               hit area meets minimum tap-target size without making the icon feel
+               chunky at rest. */}
           <button
+            aria-label={`Open menu for ${persona.name}`}
             onClick={(e) => handleMenuButtonClick(e, persona.id)}
-            className={`w-5 h-5 rounded flex items-center justify-center text-gray-500 hover:text-white hover:bg-gray-700 transition-colors text-xs leading-none flex-shrink-0 ${
+            className={`w-8 h-8 rounded flex items-center justify-center text-gray-500 hover:text-white hover:bg-gray-700 transition-colors text-xs leading-none flex-shrink-0 ${
               contextMenu?.id === persona.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
             }`}
             title="Menu"
@@ -278,6 +413,103 @@ export default function ChatSidebar({
           </p>
         )}
       </div>
+
+      {/* Session list (only when expanded) */}
+      {isExpanded && (
+        <div className="pl-10 pr-2 pb-2 bg-gray-950/40">
+          <button
+            onClick={async () => {
+              try {
+                const { sessionId } = await window.electronAPI.chat.createSession(persona.id);
+                onSelectSession(persona.id, sessionId);
+              } catch (err) {
+                console.error('Failed to create session:', err);
+              }
+            }}
+            className="w-full text-left px-2 py-1.5 text-[11px] text-indigo-300 hover:bg-gray-800/70 rounded transition-colors flex items-center gap-1.5"
+            title="Start a new chat with this persona"
+          >
+            <span className="text-sm leading-none">+</span>
+            <span>New chat</span>
+          </button>
+
+          {sessions.length === 0 && (
+            <p className="px-2 py-1 text-[11px] text-gray-600 italic">No chats yet</p>
+          )}
+
+          {visibleSessions.map((s) => {
+            const isSessionActive = persona.id === activePersonaId && s.id === activeSessionId;
+            const isSessionEditing = editingSessionId === s.id;
+            return (
+              <div
+                key={s.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => onSelectSession(persona.id, s.id)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setSessionMenu({ sessionId: s.id, personaId: persona.id, x: e.clientX, y: e.clientY });
+                }}
+                onKeyDown={(e) => { if (e.key === 'Enter') onSelectSession(persona.id, s.id); }}
+                className={`group/s w-full text-left px-2 py-1.5 rounded text-[12px] truncate transition-colors cursor-pointer flex items-center gap-1 ${
+                  isSessionActive
+                    ? 'bg-indigo-600/25 text-white'
+                    : 'text-gray-400 hover:bg-gray-800/70 hover:text-gray-200'
+                }`}
+              >
+                {isSessionEditing ? (
+                  <input
+                    ref={sessionRenameInputRef}
+                    value={editingSessionValue}
+                    onChange={(e) => setEditingSessionValue(e.target.value)}
+                    onBlur={handleSessionRenameSubmit}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleSessionRenameSubmit();
+                      if (e.key === 'Escape') { setEditingSessionId(null); setEditingSessionValue(''); }
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    className="flex-1 bg-gray-800 border border-indigo-500 rounded px-1 py-0.5 text-[12px] text-white focus:outline-none min-w-0"
+                  />
+                ) : (
+                  <>
+                    <span className="truncate flex-1">{sessionLabel(s)}</span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                        setSessionMenu({ sessionId: s.id, personaId: persona.id, x: rect.right, y: rect.bottom + 4 });
+                      }}
+                      className={`w-4 h-4 flex items-center justify-center rounded text-gray-500 hover:text-white hover:bg-gray-700 text-[10px] leading-none flex-shrink-0 ${
+                        sessionMenu?.sessionId === s.id ? 'opacity-100' : 'opacity-0 group-hover/s:opacity-100'
+                      }`}
+                      title="Chat menu"
+                    >
+                      ···
+                    </button>
+                  </>
+                )}
+              </div>
+            );
+          })}
+
+          {sessions.length > 5 && !showAll && (
+            <button
+              onClick={() =>
+                setShowAllFor((prev) => {
+                  const next = new Set(prev);
+                  next.add(persona.id);
+                  return next;
+                })
+              }
+              className="w-full text-left px-2 py-1 text-[11px] text-gray-500 hover:text-gray-300 transition-colors"
+            >
+              Show all ({sessions.length})
+            </button>
+          )}
+        </div>
+      )}
+      </div>
     );
   }
 
@@ -286,11 +518,12 @@ export default function ChatSidebar({
       <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-gray-300">Conversations</h2>
         <div className="flex items-center gap-1">
-          {/* Import button */}
+          {/* Import button — QA finding UI9: 24px → 36px for a11y tap target. */}
           <button
+            aria-label="Import persona"
             onClick={handleImportClick}
             title="Import persona"
-            className="w-6 h-6 rounded flex items-center justify-center text-gray-400 hover:bg-gray-800 hover:text-white transition-colors text-xs leading-none"
+            className="w-9 h-9 rounded flex items-center justify-center text-gray-400 hover:bg-gray-800 hover:text-white transition-colors text-xs leading-none"
           >
             &darr;
           </button>
@@ -301,11 +534,12 @@ export default function ChatSidebar({
             className="hidden"
             onChange={handleFileChange}
           />
-          {/* New persona button */}
+          {/* New persona button — QA finding UI9. */}
           <button
+            aria-label="New persona"
             onClick={() => setShowModal(true)}
             title="New persona"
-            className="w-6 h-6 rounded flex items-center justify-center text-gray-400 hover:bg-gray-800 hover:text-white transition-colors text-lg leading-none"
+            className="w-9 h-9 rounded flex items-center justify-center text-gray-400 hover:bg-gray-800 hover:text-white transition-colors text-lg leading-none"
           >
             +
           </button>
@@ -371,6 +605,31 @@ export default function ChatSidebar({
               </button>
             )
           )}
+        </div>
+      )}
+
+      {/* ── Session Context Menu ── */}
+      {sessionMenu && (
+        <div
+          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[140px]"
+          style={{ left: sessionMenu.x, top: sessionMenu.y }}
+        >
+          <button
+            onClick={() => handleSessionRenameStart(sessionMenu.sessionId)}
+            className="w-full text-left px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700"
+          >
+            Rename
+          </button>
+          <div className="border-t border-gray-700 my-1" />
+          <button
+            onClick={() => {
+              onDeleteSession(sessionMenu.sessionId);
+              setSessionMenu(null);
+            }}
+            className="w-full text-left px-3 py-1.5 text-sm text-red-400 hover:bg-red-900/30"
+          >
+            Delete
+          </button>
         </div>
       )}
 

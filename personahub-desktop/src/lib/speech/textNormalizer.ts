@@ -57,9 +57,12 @@ export function normalizeForSpeech(text: string): string {
   // Trim
   result = result.trim();
 
-  // Cap at maximum length
+  // Cap at maximum length using code-point iteration so we never slice
+  // a UTF-16 surrogate pair in half (which would leave a lone surrogate
+  // that some TTS providers reject).
   if (result.length > MAX_TTS_LENGTH) {
-    result = result.substring(0, MAX_TTS_LENGTH - 3) + '...';
+    const points = Array.from(result);
+    result = points.slice(0, MAX_TTS_LENGTH - 3).join('') + '...';
   }
 
   return result;

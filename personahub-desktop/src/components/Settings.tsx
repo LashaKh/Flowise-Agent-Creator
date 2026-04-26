@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import toast from 'react-hot-toast';
 import type { UserPreferences, GlobalVoicePrefs, VoiceProvider, AvatarStyleId } from '../types';
-import { clearAllSessionCache } from '../hooks/useChat';
 import UsagePanel from './UsagePanel';
 import ModelPicker from './ModelPicker';
 import { DEFAULT_MODEL_ID, getModelById } from '../constants/models';
@@ -76,6 +75,9 @@ export default function Settings() {
     setVoicePrefs(updated);
     try {
       await window.electronAPI.voice.setPrefs(updates);
+      // Broadcast so ChatWindow (and any other listener) reacts without
+      // needing to be re-mounted via a view switch.
+      window.dispatchEvent(new CustomEvent('voice-prefs-changed', { detail: updated }));
       flashSaved();
     } catch (err) {
       console.error('[Settings] Failed to save voice prefs:', err);
@@ -102,6 +104,10 @@ export default function Settings() {
         backupRetentionDays: updated.backupRetentionDays,
         maxBackups: updated.maxBackups,
       });
+      // Broadcast so `useTheme()` (and anything else that consumes user
+      // prefs live) can update without an app restart. Mirrors the
+      // `voice-prefs-changed` pattern already used for the voice section.
+      window.dispatchEvent(new CustomEvent('prefs-changed', { detail: updated }));
       flashSaved();
     } catch (err) {
       console.error('[Settings] Failed to save preferences:', err);
@@ -125,13 +131,11 @@ export default function Settings() {
 
   const handleSignOut = async () => {
     try {
-      clearAllSessionCache();
       await window.electronAPI.auth.logout();
-      window.location.reload();
     } catch {
-      clearAllSessionCache();
-      window.location.reload();
+      /* fall through — reload regardless */
     }
+    window.location.reload();
   };
 
   const currentDefaultModel = getModelById(defaultModelId);
@@ -175,8 +179,11 @@ export default function Settings() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <Card title="Appearance" icon="🎨">
               <Label>Theme</Label>
-              <div className="grid grid-cols-3 gap-2">
-                {(['light', 'dark', 'system'] as const).map((t) => (
+              {/* QA finding UI4: Light mode was a dead toggle — the chrome is
+                  hard-coded to the dark palette. Offer only Dark + System
+                  until a proper light skin lands. */}
+              <div className="grid grid-cols-2 gap-2">
+                {(['dark', 'system'] as const).map((t) => (
                   <button
                     key={t}
                     onClick={() => savePrefs({ ...prefs, theme: t })}
@@ -193,15 +200,16 @@ export default function Settings() {
             </Card>
 
             <Card title="Keyboard Shortcut" icon="⌨">
-              <div className="flex items-center justify-between h-full">
-                <div>
-                  <div className="text-sm text-white">Global toggle</div>
-                  <div className="text-xs text-gray-500">Show/hide PersonaHub anywhere</div>
-                </div>
-                <kbd className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-md text-xs text-gray-200 font-mono shadow-inner">
-                  {prefs.globalKeyboardShortcut}
-                </kbd>
-              </div>
+              <Label>Global toggle — show/hide PersonaHub anywhere</Label>
+              <ShortcutCapture
+                value={prefs.globalKeyboardShortcut}
+                onChange={(accelerator) =>
+                  savePrefs({ ...prefs, globalKeyboardShortcut: accelerator })
+                }
+              />
+              <p className="text-[11px] text-gray-500 mt-2">
+                Click the field and press the key combo you want. Saves instantly.
+              </p>
             </Card>
 
             <Card title="Startup" icon="🚀">
@@ -210,12 +218,6 @@ export default function Settings() {
                 description="Launch PersonaHub when your computer starts"
                 checked={prefs.startOnLogin}
                 onChange={(v) => savePrefs({ ...prefs, startOnLogin: v })}
-              />
-              <ToggleRow
-                label="Notifications"
-                description="Show desktop notifications for persona activity"
-                checked={prefs.notificationsEnabled}
-                onChange={(v) => savePrefs({ ...prefs, notificationsEnabled: v })}
               />
             </Card>
 
@@ -394,12 +396,6 @@ export default function Settings() {
                 checked={voicePrefs.localOnlyMode}
                 onChange={(v) => saveVoicePrefs({ localOnlyMode: v })}
               />
-              <ToggleRow
-                label="Auto-stop on blur"
-                description="Stop mic when app loses focus"
-                checked={voicePrefs.autoStopOnBlur}
-                onChange={(v) => saveVoicePrefs({ autoStopOnBlur: v })}
-              />
               <button
                 onClick={async () => {
                   try {
@@ -423,25 +419,6 @@ export default function Settings() {
         {/* ─── Advanced tab ─── */}
         {activeTab === 'advanced' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <Card title="Backups" icon="💾">
-              <NumberRow
-                label="Retention (days)"
-                description="How long to keep file backups"
-                value={prefs.backupRetentionDays}
-                min={1}
-                max={365}
-                onChange={(v) => savePrefs({ ...prefs, backupRetentionDays: v })}
-              />
-              <NumberRow
-                label="Max backups"
-                description="Maximum number of backups to keep"
-                value={prefs.maxBackups}
-                min={10}
-                max={10000}
-                onChange={(v) => savePrefs({ ...prefs, maxBackups: v })}
-              />
-            </Card>
-
             <Card title="About" icon="ℹ">
               <div className="text-center py-4">
                 <div className="text-3xl mb-2">🪄</div>
@@ -525,11 +502,14 @@ function ToggleRow({
         <div className="text-xs text-gray-500">{description}</div>
       </div>
       <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
         onClick={() => onChange(!checked)}
         className={`w-11 h-6 rounded-full relative transition-colors shrink-0 ${
           checked ? 'bg-indigo-600' : 'bg-gray-700'
         }`}
-        aria-pressed={checked}
       >
         <span
           className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-md transition-transform ${
@@ -541,35 +521,71 @@ function ToggleRow({
   );
 }
 
-function NumberRow({
-  label,
-  description,
+/**
+ * Keyboard-shortcut capture field.
+ *
+ * Click it, press a key combo, it saves. Uses Electron's accelerator string
+ * format (e.g. `CmdOrCtrl+Shift+P`). Shows the current binding as a kbd
+ * pill when not in capture mode.
+ */
+function ShortcutCapture({
   value,
-  min,
-  max,
   onChange,
 }: {
-  label: string;
-  description: string;
-  value: number;
-  min: number;
-  max: number;
-  onChange: (v: number) => void;
+  value: string;
+  onChange: (accelerator: string) => void;
 }) {
+  const [capturing, setCapturing] = useState(false);
+
+  useEffect(() => {
+    if (!capturing) return;
+
+    function onKey(e: KeyboardEvent) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      // Ignore modifier-only presses — wait for a real key.
+      if (['Control', 'Meta', 'Shift', 'Alt', 'OS', 'Hyper'].includes(e.key)) return;
+      if (e.key === 'Escape') {
+        setCapturing(false);
+        return;
+      }
+
+      const parts: string[] = [];
+      if (e.metaKey || e.ctrlKey) parts.push('CmdOrCtrl');
+      if (e.altKey) parts.push('Alt');
+      if (e.shiftKey) parts.push('Shift');
+
+      // Normalize key — letter keys to uppercase, arrows + common keys kept as-is.
+      let key = e.key;
+      if (/^[a-z]$/.test(key)) key = key.toUpperCase();
+      if (key === ' ') key = 'Space';
+      parts.push(key);
+
+      // Require at least one modifier to avoid hijacking single letters globally.
+      if (parts.length < 2) return;
+
+      const accel = parts.join('+');
+      onChange(accel);
+      setCapturing(false);
+    }
+
+    window.addEventListener('keydown', onKey, { capture: true });
+    return () => window.removeEventListener('keydown', onKey, { capture: true });
+  }, [capturing, onChange]);
+
   return (
-    <div className="flex items-center justify-between py-1.5 gap-3">
-      <div className="min-w-0 flex-1">
-        <div className="text-sm text-white">{label}</div>
-        <div className="text-xs text-gray-500">{description}</div>
-      </div>
-      <input
-        type="number"
-        min={min}
-        max={max}
-        value={value}
-        onChange={(e) => onChange(Math.max(min, Math.min(max, parseInt(e.target.value) || min)))}
-        className="w-20 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white text-right focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 shrink-0"
-      />
-    </div>
+    <button
+      type="button"
+      onClick={() => setCapturing((c) => !c)}
+      className={`w-full text-left px-3 py-2 rounded-lg border text-sm font-mono transition-colors ${
+        capturing
+          ? 'bg-indigo-950/40 border-indigo-500 text-indigo-200 animate-pulse'
+          : 'bg-gray-800 border-gray-700 text-gray-200 hover:border-gray-600'
+      }`}
+      title={capturing ? 'Press any key combination…' : 'Click to change'}
+    >
+      {capturing ? 'Press your shortcut…' : value}
+    </button>
   );
 }

@@ -49,40 +49,77 @@ jobs:
         working-directory: personahub-desktop
         run: pnpm test
 
-      - name: Build Electron app
+      # Native modules need a Windows-flavored binary on Windows runners.
+      # `electron-builder install-app-deps` (postinstall) usually does this,
+      # but pnpm's strict mode can skip it silently — the explicit rebuild
+      # is cheap insurance against "app crashes on first DB read" on Windows.
+      - name: Rebuild native modules for Windows
+        if: matrix.platform == 'win'
         working-directory: personahub-desktop
-        run: pnpm electron:build:${{ matrix.platform }}
+        run: pnpm rebuild better-sqlite3
+
+      # ─── macOS: build for both architectures, ad-hoc sign, then publish ─
+      # Until Apple Developer ID + notarization secrets are configured,
+      # we ad-hoc sign so the app at least runs locally for users who run
+      # the documented `xattr -cr` workaround. Once notarization is wired
+      # this whole block can collapse into a single `--publish always`.
+      - name: Build (macOS, both archs, no publish yet)
+        if: matrix.platform == 'mac'
+        working-directory: personahub-desktop
+        run: |
+          pnpm exec tsc -b
+          pnpm exec vite build
+          pnpm exec electron-builder --mac --config electron-builder.config.js --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
-      - name: Ad-hoc sign macOS app
+      - name: Ad-hoc sign macOS apps (arm64 + x64)
         if: matrix.platform == 'mac'
         working-directory: personahub-desktop
         run: |
-          APP_PATH=$(find release -name "*.app" -maxdepth 3 | head -1)
-          if [ -n "$APP_PATH" ]; then
-            codesign --force --deep --sign - "$APP_PATH"
-            echo "Ad-hoc signed: $APP_PATH"
-          fi
+          for arch in arm64 x64; do
+            APP_PATH=$(find "release/mac-${arch}" -maxdepth 2 -name "*.app" 2>/dev/null | head -1)
+            if [ -n "$APP_PATH" ]; then
+              codesign --force --deep --sign - "$APP_PATH"
+              echo "Ad-hoc signed: $APP_PATH"
+            fi
+          done
 
-      - name: Rebuild macOS DMG after signing
+      - name: Repackage and publish macOS DMGs (arm64 + x64)
         if: matrix.platform == 'mac'
         working-directory: personahub-desktop
         run: |
-          rm -f release/*.dmg release/*.dmg.blockmap
-          npx electron-builder --mac dmg --config electron-builder.config.js --prepackaged "release/mac-arm64"
+          rm -f release/*.dmg release/*.dmg.blockmap release/*.zip release/*.zip.blockmap release/latest-mac.yml
+          for arch in arm64 x64; do
+            if [ -d "release/mac-${arch}" ]; then
+              pnpm exec electron-builder --mac --config electron-builder.config.js --prepackaged "release/mac-${arch}" --publish always
+            fi
+          done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
-      - name: Upload release assets
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            personahub-desktop/release/*.dmg
-            personahub-desktop/release/*.exe
-            personahub-desktop/release/*.AppImage
-            personahub-desktop/release/*.zip
+      # ─── Windows: build with publish so latest.yml + blockmap upload ───
+      - name: Build & publish (Windows)
+        if: matrix.platform == 'win'
+        working-directory: personahub-desktop
+        run: |
+          pnpm exec tsc -b
+          pnpm exec vite build
+          pnpm exec electron-builder --win --config electron-builder.config.js --publish always
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      # ─── Linux: build with publish so latest-linux.yml uploads ────────
+      - name: Build & publish (Linux)
+        if: matrix.platform == 'linux'
+        working-directory: personahub-desktop
+        run: |
+          pnpm exec tsc -b
+          pnpm exec vite build
+          pnpm exec electron-builder --linux --config electron-builder.config.js --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
