@@ -11,6 +11,3 @@ Thumbs.db
 .vscode/
 .idea/
 auth-token.enc
-
-# OpenRouter pre-configured API key — never commit
-electron/openrouter-config.ts

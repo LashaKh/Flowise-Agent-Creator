@@ -37,6 +37,12 @@ vi.mock('node:http', () => ({ default: { get: vi.fn() } }));
 import { getOpenClawEntryPath, checkInstallation, writeConfig } from '../openclaw-manager';
 import { app } from 'electron';
 import fs from 'node:fs';
+import path from 'node:path';
+
+// Platform-agnostic substring: builds the expected fragment using the
+// host's path separator so the same assertion passes on macOS/Linux
+// (forward slashes) and Windows (backslashes).
+const NODE_MODULES_OPENCLAW_ENTRY = path.join('node_modules', 'openclaw', 'openclaw.mjs');
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -48,7 +54,7 @@ describe('getOpenClawEntryPath', () => {
     vi.mocked(app.getAppPath).mockReturnValue('/project/personahub-desktop');
 
     const result = getOpenClawEntryPath();
-    expect(result).toContain('node_modules/openclaw/openclaw.mjs');
+    expect(result).toContain(NODE_MODULES_OPENCLAW_ENTRY);
     expect(result).not.toContain('app.asar.unpacked');
   });
 
@@ -58,7 +64,7 @@ describe('getOpenClawEntryPath', () => {
 
     const result = getOpenClawEntryPath();
     expect(result).toContain('app.asar.unpacked');
-    expect(result).toContain('node_modules/openclaw/openclaw.mjs');
+    expect(result).toContain(NODE_MODULES_OPENCLAW_ENTRY);
   });
 });
 
