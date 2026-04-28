@@ -15,14 +15,14 @@ export default {
     'public/**/*',
   ],
   asarUnpack: [
-    '**/node_modules/openclaw/**',
-    '**/node_modules/sharp/**',
-    '**/node_modules/@img/**',
-    // better-sqlite3 ships a native .node addon that cannot load from inside
-    // a compressed .asar. Without this entry the packaged app crashes at DB
-    // init with "NODE_MODULE_VERSION mismatch" or "Cannot find module".
-    '**/node_modules/better-sqlite3/**',
-    '**/node_modules/bindings/**',
+    // Unpack ALL node_modules. Openclaw is an ESM module spawned via
+    // `process.execPath` + ELECTRON_RUN_AS_NODE; Node's ESM resolver
+    // cannot see into the asar archive, so any transitive dep that's
+    // hoisted to the top-level node_modules (e.g. tslog) fails with
+    // ERR_MODULE_NOT_FOUND. Also covers native addons like better-sqlite3
+    // and sharp that need an on-disk .node file. The cost is a slightly
+    // larger install footprint; the win is reliable runtime resolution.
+    '**/node_modules/**',
   ],
   // macOS
   mac: {
