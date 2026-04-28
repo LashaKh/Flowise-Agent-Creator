@@ -26,13 +26,15 @@ export default {
   ],
   // macOS
   mac: {
-    // Build for both Apple Silicon (arm64) and Intel (x64). Without explicit
-    // arch, electron-builder defaults to host arch — the macos-latest CI
-    // runner is arm64, so Intel-Mac users get no installable build.
-    target: [
-      { target: 'dmg', arch: ['arm64', 'x64'] },
-      { target: 'zip', arch: ['arm64', 'x64'] },
-    ],
+    // No arch in target — let CLI flags (--x64 / --arm64) drive the arch.
+    // When BOTH archs are passed via CLI, both are built. With no arch
+    // arg, host-arch only. Critically, a per-arch electron-builder call
+    // with `--prepackaged X --x64` only produces x64 output ONLY when
+    // the config doesn't pre-declare both archs. The previous form
+    // `arch: ['arm64','x64']` caused electron-builder to build BOTH
+    // archs from a single prepackaged input and overwrite the output —
+    // ending up with two DMGs that both contain whichever arch ran last.
+    target: ['dmg', 'zip'],
     artifactName: 'PersonaHub-Desktop-${version}-${arch}.${ext}',
     category: 'public.app-category.productivity',
     icon: 'build/icon.icns',
