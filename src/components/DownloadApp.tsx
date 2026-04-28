@@ -4,7 +4,7 @@ type Platform = 'mac' | 'windows' | 'linux';
 
 // Single source of truth for download filenames. Bump this on each release
 // AFTER publishing the new GitHub release with matching artifact names.
-const APP_VERSION = '0.3.6';
+const APP_VERSION = '0.3.7';
 
 const GITHUB_RELEASE_BASE =
   'https://github.com/LashaKh/Flowise-Agent-Creator/releases/latest/download';

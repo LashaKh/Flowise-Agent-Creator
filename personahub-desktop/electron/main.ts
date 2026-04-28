@@ -17,11 +17,11 @@ import { handleValidated, setMainWindow } from './ipc-validation';
 import {
   generateSpeech,
   transcribeAudio,
-  generatePrompt,
   generateSessionTitle,
   disconnect as disconnectGatewayWS,
 } from './openclaw-client';
 import { setConfirmHandler as setOpenRouterConfirmHandler } from './openrouter-client';
+import { openrouterGeneratePrompt } from './openrouter-prompt-gen';
 import { storeVoiceKey, deleteVoiceKey, hasVoiceKey } from './voice-key-store';
 import { getMonthlySummary as getLlmMonthlySummary } from './llm-usage-log';
 
@@ -368,19 +368,24 @@ function setupIPC() {
     // and the user sees a cryptic error. Fall back to a reasonable
     // placeholder prompt so the persona still gets created — the user can
     // later hit "Regenerate Prompt" in Settings once the gateway is up.
+    // Always go through OpenRouter for prompt generation — the bundled key
+    // (or user's own) is available by default in OpenRouter-only mode.
+    // The legacy openclaw `generatePrompt` is no longer reached here, but
+    // remains imported for `generateSessionTitle` which uses the gateway
+    // when it IS running and is gracefully optional otherwise.
     let systemPrompt: string;
     let usedFallbackPrompt = false;
     try {
-      systemPrompt = await generatePrompt(name, description);
+      systemPrompt = await openrouterGeneratePrompt(name, description);
     } catch (err) {
-      console.warn('[persona:create] generatePrompt failed, using placeholder:', err);
+      console.warn('[persona:create] openrouterGeneratePrompt failed, using placeholder:', err);
       usedFallbackPrompt = true;
       systemPrompt = [
         `You are ${name}.`,
         '',
         description?.trim() || 'A helpful AI assistant.',
         '',
-        '(Placeholder prompt — regenerate from Settings once the OpenClaw gateway is available for a personalized one.)',
+        "(Placeholder — your AI couldn't reach the prompt generator. You can write your own in Settings → Edit Persona → System Prompt, or click Regenerate to try again.)",
       ].join('\n');
     }
 
@@ -508,7 +513,13 @@ function setupIPC() {
     const persona = db.getPersonaById(id);
     if (!persona) throw new Error(`Persona ${id} not found`);
 
-    const systemPrompt = await generatePrompt(persona.name, persona.systemPrompt.slice(0, 200));
+    // OpenRouter-backed regeneration — works whether or not the openclaw
+    // gateway is running. Uses the existing prompt's first 200 chars as
+    // the description so regeneration preserves the persona's flavor.
+    const systemPrompt = await openrouterGeneratePrompt(
+      persona.name,
+      persona.systemPrompt.slice(0, 200),
+    );
     persona.systemPrompt = systemPrompt;
     persona.updatedAt = new Date().toISOString();
     db.upsertPersona(persona);

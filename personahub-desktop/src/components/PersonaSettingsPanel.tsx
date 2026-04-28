@@ -54,6 +54,11 @@ export default function PersonaSettingsPanel({
   // gets injected into the system prompt on every send so the persona
   // remembers facts even after starting a fresh chat.
   const [personaMemory, setPersonaMemory] = useState<string>('');
+  // When the user has typed manual edits into the System Prompt, clicking
+  // Regenerate would clobber them with the AI-generated replacement. We
+  // gate the destructive action behind an inline confirmation pill so
+  // users don't lose work to a misclick.
+  const [pendingRegenerate, setPendingRegenerate] = useState(false);
 
   // Load persona data + knowledge docs on mount
   useEffect(() => {
@@ -114,7 +119,23 @@ export default function PersonaSettingsPanel({
     }
   }
 
-  async function handleRegenerate() {
+  // True when the user has typed local edits since the persona last loaded.
+  const hasUnsavedPromptEdits =
+    persona !== null && systemPrompt !== persona.systemPrompt;
+
+  // Click handler for the "Regenerate" button. Gates on dirty edits so
+  // an AI-generated replacement can't silently nuke manual work. When
+  // there's nothing to lose, runs immediately.
+  function handleRegenerate() {
+    if (hasUnsavedPromptEdits) {
+      setPendingRegenerate(true);
+      return;
+    }
+    runRegenerate();
+  }
+
+  async function runRegenerate() {
+    setPendingRegenerate(false);
     setIsRegenerating(true);
     setError('');
 
@@ -313,7 +334,21 @@ export default function PersonaSettingsPanel({
 
             {/* Persona Memory card (full width) */}
             <div className="lg:col-span-2">
-              <SectionCard title="Persona Memory" icon="🧠">
+              <SectionCard
+                title="Persona Memory"
+                icon="🧠"
+                headerAction={
+                  personaMemory.trim() ? (
+                    <span
+                      title="Memory is non-empty — it will be injected into every conversation."
+                      className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-emerald-400 bg-emerald-400/10 border border-emerald-400/30 rounded-full px-2 py-0.5"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                      Active
+                    </span>
+                  ) : null
+                }
+              >
                 <p className="text-[11px] text-gray-500 mb-2">
                   Facts this persona should remember across all your chats — your name, preferences, context about you.
                   Injected into every new conversation so the persona doesn&apos;t forget between sessions.
@@ -347,12 +382,45 @@ export default function PersonaSettingsPanel({
                   </button>
                 }
               >
+                {pendingRegenerate && (
+                  <div className="mb-2 flex items-center gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                    <span className="flex-1">
+                      You have unsaved manual edits. Replace them with a new AI-generated prompt?
+                    </span>
+                    <button
+                      onClick={runRegenerate}
+                      className="rounded-md bg-amber-500 px-2.5 py-1 text-[11px] font-medium text-gray-900 hover:bg-amber-400 transition-colors"
+                    >
+                      Replace
+                    </button>
+                    <button
+                      onClick={() => setPendingRegenerate(false)}
+                      className="rounded-md border border-amber-500/40 px-2.5 py-1 text-[11px] text-amber-200 hover:bg-amber-500/10 transition-colors"
+                    >
+                      Keep my edits
+                    </button>
+                  </div>
+                )}
                 <textarea
                   value={systemPrompt}
                   onChange={(e) => setSystemPrompt(e.target.value)}
                   rows={8}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-300 font-mono focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 resize-y"
                 />
+                <div className="flex items-center justify-between text-[10px] mt-1">
+                  <span className={
+                    systemPrompt.trim().length < 10
+                      ? 'text-amber-400'
+                      : 'text-gray-600'
+                  }>
+                    {systemPrompt.trim().length < 10
+                      ? 'System prompt is short — write more or click Regenerate.'
+                      : ''}
+                  </span>
+                  <span className="text-gray-600">
+                    {systemPrompt.length.toLocaleString()} chars
+                  </span>
+                </div>
               </SectionCard>
             </div>
 
