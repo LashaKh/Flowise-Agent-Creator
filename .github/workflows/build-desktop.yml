@@ -79,6 +79,22 @@ jobs:
           # Baked into the build via Vite `define` — never appears in source.
           PERSONAHUB_OPENROUTER_KEY: ${{ secrets.PERSONAHUB_OPENROUTER_KEY }}
 
+      # electron-builder names the host-arch output dir `release/mac` and
+      # cross-arch dirs as `release/mac-<arch>`. On macos-latest (arm64),
+      # x64 lands in `release/mac` while arm64 lands in `release/mac-arm64`.
+      # Normalize both to `release/mac-<arch>` so the sign + repackage loops
+      # below can iterate uniformly. Without this, the x64 DMG silently gets
+      # built from the arm64 prepackaged input — Intel users get an arm64 app.
+      - name: Normalize macOS output directory naming
+        if: matrix.platform == 'mac'
+        working-directory: personahub-desktop
+        run: |
+          if [ -d "release/mac" ] && [ ! -d "release/mac-x64" ]; then
+            mv release/mac release/mac-x64
+            echo "Renamed release/mac → release/mac-x64"
+          fi
+          ls -la release/
+
       - name: Ad-hoc sign macOS apps (arm64 + x64)
         if: matrix.platform == 'mac'
         working-directory: personahub-desktop
@@ -88,6 +104,8 @@ jobs:
             if [ -n "$APP_PATH" ]; then
               codesign --force --deep --sign - "$APP_PATH"
               echo "Ad-hoc signed: $APP_PATH"
+            else
+              echo "WARNING: no .app found under release/mac-${arch}"
             fi
           done
 
@@ -98,7 +116,14 @@ jobs:
           rm -f release/*.dmg release/*.dmg.blockmap release/*.zip release/*.zip.blockmap release/latest-mac.yml
           for arch in arm64 x64; do
             if [ -d "release/mac-${arch}" ]; then
-              pnpm exec electron-builder --mac --config electron-builder.config.js --prepackaged "release/mac-${arch}" --publish always
+              # Pass --${arch} explicitly so electron-builder ONLY produces
+              # DMGs for this arch from this prepackaged input. Without it,
+              # the build runs the config's full arch matrix and packages
+              # the same prepackaged input into both arch-named DMGs —
+              # producing an x64.dmg that secretly contains arm64 content.
+              pnpm exec electron-builder --mac --${arch} --config electron-builder.config.js --prepackaged "release/mac-${arch}" --publish always
+            else
+              echo "WARNING: release/mac-${arch} missing, skipping"
             fi
           done
         env:
