@@ -83,6 +83,51 @@ export async function checkInstallation(): Promise<boolean> {
 }
 
 /**
+ * Path to the marker file that records "user clicked Continue without setup
+ * in the wizard". Its existence tells the renderer to skip the wizard on
+ * subsequent launches even though no Anthropic/Gemini key is configured.
+ */
+const SETUP_SKIPPED_MARKER = path.join(OPENCLAW_CONFIG_DIR, 'setup-skipped');
+
+/**
+ * Returns true if the user has either configured a provider OR explicitly
+ * skipped the wizard (using the bundled OpenRouter key). The renderer's
+ * SetupWizard gate uses THIS — `checkInstallation` is the stricter "do we
+ * have an openclaw provider configured" check used by the boot sequence.
+ */
+export function isSetupComplete(): boolean {
+  if (getConfiguredProvider() !== null) return true;
+  return fs.existsSync(SETUP_SKIPPED_MARKER);
+}
+
+/**
+ * Record that the user chose "Continue without setup". Writes a tiny
+ * marker file under ~/.openclaw/. Idempotent.
+ */
+export function markSetupSkipped(): void {
+  if (!fs.existsSync(OPENCLAW_CONFIG_DIR)) {
+    fs.mkdirSync(OPENCLAW_CONFIG_DIR, { recursive: true });
+  }
+  if (fs.existsSync(SETUP_SKIPPED_MARKER)) return;
+  fs.writeFileSync(SETUP_SKIPPED_MARKER, new Date().toISOString(), { mode: 0o600 });
+}
+
+/**
+ * Clear the "skipped" marker. Used when a user later adds a real API key
+ * via Settings — the marker becomes redundant and the provider config
+ * takes over.
+ */
+export function clearSetupSkipped(): void {
+  try {
+    if (fs.existsSync(SETUP_SKIPPED_MARKER)) {
+      fs.unlinkSync(SETUP_SKIPPED_MARKER);
+    }
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
  * Return the provider whose apiKey is configured, or null if none.
  * Used by the renderer to show "we detected your existing key" messaging.
  */

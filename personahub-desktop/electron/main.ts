@@ -60,6 +60,8 @@ import {
   getConfiguredProvider,
   getConfiguredKeyPreview,
   getLastStartupError,
+  isSetupComplete,
+  markSetupSkipped,
 } from './openclaw-manager';
 
 // Platform sync
@@ -324,11 +326,13 @@ function setupIPC() {
 
   // ─── Agent ──────────────────────────────────
   handleValidated('agent:send', async (_e, personaId: string, sessionId: string, message: string) => {
-    // Fail fast with a user-facing message if the gateway didn't boot —
-    // otherwise the request hits agentBridge.sendMessage and dies at the
-    // network layer with a cryptic ECONNREFUSED that bubbles up much later.
+    // Fail fast with a user-facing message if the agent bridge didn't
+    // initialize — otherwise the request would die at the network layer
+    // with a cryptic ECONNREFUSED that bubbles up much later. In normal
+    // operation the bridge is always ready (either OpenClaw-mode after
+    // gateway startup, or OpenRouter-only mode for the bundled-key path).
     if (!isGatewayReady()) {
-      throw new Error('AI gateway is not running. Please open Settings → run Diagnostics, or restart the app.');
+      throw new Error('AI engine is not ready. Try restarting the app, or open Settings → run Diagnostics.');
     }
     const persona = getDatabase().getPersonaById(personaId);
     if (!persona) throw new Error(`Persona ${personaId} not found`);
@@ -760,8 +764,18 @@ function setupIPC() {
   // ─── OpenClaw setup ─────────────────────────
   handleValidated('openclaw:checkInstalled', async () => {
     if (IS_E2E) return true; // E2E skips OpenClaw install — UI must render without it
-    const result = await checkInstallation();
-    return result;
+    // The renderer's wizard gate is "has the user completed setup, in any
+    // form?" — including the "Continue without setup" / OpenRouter-only
+    // path. checkInstallation() is the stricter test (does an openclaw
+    // provider have a real key) used elsewhere.
+    return isSetupComplete();
+  });
+
+  // User chose "Continue without setup" — record the skip marker so the
+  // wizard isn't shown again on subsequent launches. The bundled OpenRouter
+  // key (in openrouter-config.ts) provides chat capability with no setup.
+  handleValidated('openclaw:skipSetup', async () => {
+    markSetupSkipped();
   });
 
   // Lets the renderer show "we detected your existing key" in the wizard
@@ -1048,11 +1062,16 @@ app.whenReady().then(async () => {
   registerProtocol();
   setupIPC();
 
-  // Try to start the local OpenClaw gateway if it's already installed.
-  // If no config yet, fall back to env vars (ANTHROPIC_API_KEY / GEMINI_API_KEY)
-  // so users with keys in their shell skip the wizard entirely.
-  // E2E mode skips the gateway entirely — no external network calls during test.
+  // Boot the agent bridge. Two paths:
+  //   1. OpenClaw mode: user has Anthropic/Gemini configured → start
+  //      gateway, wire security, init bridge with gateway connected.
+  //   2. OpenRouter-only mode: no openclaw config → skip gateway, but
+  //      STILL init the bridge so OpenRouter chat works out-of-the-box
+  //      with the bundled API key. This is the "Continue without setup"
+  //      path; testers can chat immediately with no configuration.
+  // E2E mode skips both — no external calls during test.
   if (!IS_E2E) {
+    let gatewayUp = false;
     const installed = (await checkInstallation()) || tryAutoBootstrapFromEnv();
     console.log('[main] checkInstallation:', installed);
     if (installed) {
@@ -1061,14 +1080,16 @@ app.whenReady().then(async () => {
         await startGateway();
         const ready = await waitForReady();
         console.log('[main] gateway ready:', ready);
-        if (ready) {
-          wireSecurityLayer();
-          initAgentBridge();
-        }
+        gatewayUp = ready;
       } catch (err) {
         console.error('[main] Failed to auto-start gateway:', err);
       }
     }
+    // Always wire the security layer (it's pure function pointers — no
+    // network) and init the bridge in whichever mode applies.
+    wireSecurityLayer();
+    initAgentBridge({ openRouterOnly: !gatewayUp });
+    console.log('[main] agent bridge initialized in', gatewayUp ? 'gateway' : 'openrouter-only', 'mode');
   } else {
     console.log('[main][E2E] Skipping OpenClaw gateway startup.');
   }

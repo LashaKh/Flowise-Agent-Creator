@@ -4,7 +4,7 @@ interface SetupWizardProps {
   onComplete: () => void;
 }
 
-type WizardStep = 'apikey' | 'installing';
+type WizardStep = 'welcome' | 'apikey' | 'installing';
 
 interface ExistingDetection {
   provider: 'anthropic' | 'google' | null;
@@ -12,7 +12,10 @@ interface ExistingDetection {
 }
 
 export default function SetupWizard({ onComplete }: SetupWizardProps) {
-  const [step, setStep] = useState<WizardStep>('apikey');
+  // 'welcome' is the new default — gives users a one-click "skip setup" path
+  // backed by the bundled OpenRouter key. Users who want their own provider
+  // (Anthropic/Gemini/own OpenRouter key) click through to the legacy flow.
+  const [step, setStep] = useState<WizardStep>('welcome');
   const [apiKey, setApiKey] = useState('');
   const [provider, setProvider] = useState<'anthropic' | 'google'>('google');
   const [installError, setInstallError] = useState<string | null>(null);
@@ -27,6 +30,19 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
 
       <div className="relative w-full max-w-lg mx-4 animate-[fadeIn_.4s_ease-out]">
         <div key={step}>
+          {step === 'welcome' && (
+            <WelcomeStep
+              onSkip={async () => {
+                try {
+                  await window.electronAPI?.openclaw.skipSetup();
+                } catch (err) {
+                  console.error('skipSetup failed:', err);
+                }
+                onComplete();
+              }}
+              onUseOwnKey={() => setStep('apikey')}
+            />
+          )}
           {step === 'apikey' && (
             <ApiKeyStep
               apiKey={apiKey}
@@ -35,6 +51,7 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
               onProviderChange={setProvider}
               onNext={() => setStep('installing')}
               onContinueExisting={onComplete}
+              onBack={() => setStep('welcome')}
             />
           )}
           {step === 'installing' && (
@@ -56,6 +73,65 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
   );
 }
 
+// ─── New Step 0: Welcome (zero-setup default) ──
+
+function WelcomeStep({
+  onSkip,
+  onUseOwnKey,
+}: {
+  onSkip: () => void | Promise<void>;
+  onUseOwnKey: () => void;
+}) {
+  const [skipping, setSkipping] = useState(false);
+
+  const handleSkip = async () => {
+    setSkipping(true);
+    try {
+      await onSkip();
+    } finally {
+      setSkipping(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6 bg-gray-900/60 backdrop-blur-sm border border-gray-800 rounded-2xl p-8 shadow-2xl">
+      <Header
+        title="Welcome to PersonaHub"
+        subtitle="Build your own AI personas. No setup required to start."
+      />
+
+      <div className="space-y-3">
+        <button
+          onClick={handleSkip}
+          disabled={skipping}
+          className="w-full py-3.5 bg-indigo-600 text-white rounded-xl font-medium hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed transition-all shadow-lg shadow-indigo-600/20 hover:shadow-indigo-500/30"
+        >
+          {skipping ? 'Starting…' : 'Get started — no setup needed'}
+        </button>
+        <p className="text-xs text-gray-500 text-center">
+          Uses our built-in AI tier. Free, no signup. You can switch to your own API key anytime in Settings.
+        </p>
+      </div>
+
+      <div className="flex items-center gap-3 my-2">
+        <div className="flex-1 h-px bg-gray-800" />
+        <span className="text-xs text-gray-600 uppercase tracking-wider">Or</span>
+        <div className="flex-1 h-px bg-gray-800" />
+      </div>
+
+      <button
+        onClick={onUseOwnKey}
+        className="w-full py-3 border border-gray-700 text-gray-300 rounded-xl font-medium hover:bg-gray-900 hover:border-gray-600 transition-colors"
+      >
+        Use your own API key (Claude or Gemini)
+      </button>
+      <p className="text-xs text-gray-500 text-center -mt-2">
+        Recommended for power users — your traffic, your account, your rate limits.
+      </p>
+    </div>
+  );
+}
+
 // ─── Step 1: API Key (detected vs fresh sub-states) ──
 
 function ApiKeyStep({
@@ -65,6 +141,7 @@ function ApiKeyStep({
   onProviderChange,
   onNext,
   onContinueExisting,
+  onBack,
 }: {
   apiKey: string;
   provider: 'anthropic' | 'google';
@@ -72,6 +149,7 @@ function ApiKeyStep({
   onProviderChange: (p: 'anthropic' | 'google') => void;
   onNext: () => void;
   onContinueExisting: () => void;
+  onBack?: () => void;
 }) {
   const [detection, setDetection] = useState<ExistingDetection | null>(null);
   const [detectionLoading, setDetectionLoading] = useState(true);
@@ -223,6 +301,14 @@ function ApiKeyStep({
           className="w-full text-xs text-gray-500 hover:text-gray-300 transition-colors"
         >
           ← Keep using existing {detection.provider === 'anthropic' ? 'Claude' : 'Gemini'} key
+        </button>
+      )}
+      {onBack && !overrideExisting && (
+        <button
+          onClick={onBack}
+          className="w-full text-xs text-gray-500 hover:text-gray-300 transition-colors"
+        >
+          ← Back to no-setup option
         </button>
       )}
     </div>

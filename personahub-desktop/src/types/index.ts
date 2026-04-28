@@ -274,6 +274,7 @@ export interface ElectronAPI {
       keyPreview: string | null;
     }>;
     validateKey: (apiKey: string, provider: string) => Promise<{ ok: boolean; error?: string }>;
+    skipSetup: () => Promise<void>;
   };
   window: {
     show: () => Promise<void>;

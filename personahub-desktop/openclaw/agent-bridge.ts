@@ -348,11 +348,29 @@ export function isGatewayReady(): boolean {
 }
 
 /**
- * Initialize the agent bridge — connects the WebSocket approval channel
- * so tool calls from OpenClaw flow through our ActionGuard.
+ * Initialize the agent bridge.
+ *
+ * Two modes:
+ *   - Normal: connects the WebSocket approval channel so tool calls from
+ *     the OpenClaw gateway flow through our ActionGuard. Used when the
+ *     user has configured Anthropic/Gemini and the gateway is running.
+ *   - OpenRouter-only: skips the WebSocket connect because the gateway
+ *     isn't running (no Anthropic/Gemini key). OpenRouter tool calls go
+ *     through `setOpenRouterConfirmHandler` directly, no gateway needed.
+ *
+ * In both modes `gatewayReady` becomes true so `agent:send` doesn't
+ * fast-fail. The flag really means "agent bridge is ready", not literally
+ * "gateway is up" — kept for backwards compatibility with the IPC check.
  */
-export function initAgentBridge(): void {
+export function initAgentBridge(options?: { openRouterOnly?: boolean }): void {
   gatewayReady = true;
+  if (options?.openRouterOnly) {
+    // No openclaw gateway — skip WebSocket. OpenRouter persona chat works
+    // because openrouter-client.ts doesn't need the gateway. Anthropic /
+    // Gemini personas would fail here, but the UI flow doesn't allow
+    // creating those without a configured provider.
+    return;
+  }
   openClawClient.connectApprovalWebSocket(async (request) => {
     // Resolve which persona this approval belongs to. The gateway sends an
     // `agentId` in the approval message — prefer that. Fall back to the first

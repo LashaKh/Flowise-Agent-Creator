@@ -137,6 +137,7 @@ const electronAPI = {
     detectExisting: () => ipcRenderer.invoke('openclaw:detectExisting'),
     validateKey: (apiKey: string, provider: string): Promise<{ ok: boolean; error?: string }> =>
       ipcRenderer.invoke('openclaw:validateKey', apiKey, provider),
+    skipSetup: () => ipcRenderer.invoke('openclaw:skipSetup'),
   },
 
   // ─── Voice & Avatar TTS ──────────────────────
