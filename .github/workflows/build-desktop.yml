@@ -76,6 +76,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          # Baked into the build via Vite `define` — never appears in source.
+          PERSONAHUB_OPENROUTER_KEY: ${{ secrets.PERSONAHUB_OPENROUTER_KEY }}
 
       - name: Ad-hoc sign macOS apps (arm64 + x64)
         if: matrix.platform == 'mac'
@@ -102,6 +104,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          # Baked into the build via Vite `define` — never appears in source.
+          PERSONAHUB_OPENROUTER_KEY: ${{ secrets.PERSONAHUB_OPENROUTER_KEY }}
 
       # ─── Windows: build with publish so latest.yml + blockmap upload ───
       - name: Build & publish (Windows)
@@ -114,6 +118,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          # Baked into the build via Vite `define` — never appears in source.
+          PERSONAHUB_OPENROUTER_KEY: ${{ secrets.PERSONAHUB_OPENROUTER_KEY }}
 
       # ─── Linux: build with publish so latest-linux.yml uploads ────────
       - name: Build & publish (Linux)
@@ -126,3 +132,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          # Baked into the build via Vite `define` — never appears in source.
+          PERSONAHUB_OPENROUTER_KEY: ${{ secrets.PERSONAHUB_OPENROUTER_KEY }}

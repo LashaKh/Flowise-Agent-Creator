@@ -4,6 +4,18 @@ import electron from 'vite-plugin-electron';
 import renderer from 'vite-plugin-electron-renderer';
 import path from 'node:path';
 
+// Bake build-time secrets into main + preload bundles. Vite replaces the
+// LITERAL TEXT `process.env.PERSONAHUB_OPENROUTER_KEY` with the JSON-
+// stringified value at build time, so the source file stays clean (no
+// key on GitHub) but the compiled output has the key inlined. CI sets
+// the env from GitHub Actions secret PERSONAHUB_OPENROUTER_KEY; local
+// dev reads from .env.local or shell. If unset, the bundled key is "".
+const buildDefines = {
+  'process.env.PERSONAHUB_OPENROUTER_KEY': JSON.stringify(
+    process.env.PERSONAHUB_OPENROUTER_KEY ?? '',
+  ),
+};
+
 export default defineConfig({
   server: {
     port: 5173,
@@ -18,6 +30,7 @@ export default defineConfig({
           args.startup();
         },
         vite: {
+          define: buildDefines,
           build: {
             outDir: 'dist-electron',
             rollupOptions: {

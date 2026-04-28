@@ -25,12 +25,21 @@ export const OPENROUTER_APP_NAME = 'PersonaHub Desktop';
 export const OPENROUTER_APP_URL = 'https://personahub.app';
 
 /**
- * Bundled fallback OpenRouter key — used when the user hasn't set their own.
- * Treat as public; must have monthly cap + rate limit configured upstream.
- * To rotate: replace the value below, bump version, ship a new release.
+ * Bundled fallback OpenRouter key — injected at BUILD TIME via Vite's
+ * `define` config from the `PERSONAHUB_OPENROUTER_KEY` env var. The literal
+ * key is never in this source file (so secret scanners on GitHub stay
+ * quiet). It IS still in the built .dmg/.exe and extractable via `strings`
+ * — that's an inherent property of any client-bundled key. To rotate:
+ *   1. Revoke old key + create new on https://openrouter.ai/settings/keys
+ *   2. Update GitHub Actions secret PERSONAHUB_OPENROUTER_KEY
+ *   3. Bump version + tag — CI bakes the new key into the next release.
+ *   4. Auto-updater pushes the new build; old keys stop working on revoke.
+ *
+ * Local dev: set PERSONAHUB_OPENROUTER_KEY in `.env.local` (gitignored)
+ * or in your shell. If unset, the bundled fallback is empty and users
+ * must provide their own OpenRouter key in Settings.
  */
-const BUNDLED_OPENROUTER_KEY =
-  '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';
+const BUNDLED_OPENROUTER_KEY: string = process.env.PERSONAHUB_OPENROUTER_KEY ?? '';
 
 /**
  * Load an OpenRouter API key. Prefers the user's own key from safeStorage;
