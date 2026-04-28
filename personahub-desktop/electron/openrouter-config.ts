@@ -26,10 +26,14 @@ export const OPENROUTER_APP_URL = 'https://personahub.app';
 
 /**
  * Bundled fallback OpenRouter key — injected at BUILD TIME via Vite's
- * `define` config from the `PERSONAHUB_OPENROUTER_KEY` env var. The literal
- * key is never in this source file (so secret scanners on GitHub stay
- * quiet). It IS still in the built .dmg/.exe and extractable via `strings`
- * — that's an inherent property of any client-bundled key. To rotate:
+ * `define` config. The placeholder string `__PERSONAHUB_OPENROUTER_KEY__`
+ * below is replaced AT BUILD TIME with the value of the
+ * PERSONAHUB_OPENROUTER_KEY env var (set as a GitHub Actions secret in CI).
+ * The literal key is never in this source file (so secret scanners on
+ * GitHub stay quiet). It IS still in the built .dmg/.exe and extractable
+ * via `strings` — that's an inherent property of any client-bundled key.
+ *
+ * To rotate:
  *   1. Revoke old key + create new on https://openrouter.ai/settings/keys
  *   2. Update GitHub Actions secret PERSONAHUB_OPENROUTER_KEY
  *   3. Bump version + tag — CI bakes the new key into the next release.
@@ -38,8 +42,16 @@ export const OPENROUTER_APP_URL = 'https://personahub.app';
  * Local dev: set PERSONAHUB_OPENROUTER_KEY in `.env.local` (gitignored)
  * or in your shell. If unset, the bundled fallback is empty and users
  * must provide their own OpenRouter key in Settings.
+ *
+ * Why the unique sentinel pattern: Vite's `define` does textual replacement
+ * on EXACT identifier matches. Using a unique placeholder identifier avoids
+ * collisions with `process.env.X` patterns Vite might or might not handle
+ * depending on plugin order, and also avoids the `?? '' ` operator getting
+ * minified into surprising shapes when the value is empty.
  */
-const BUNDLED_OPENROUTER_KEY: string = process.env.PERSONAHUB_OPENROUTER_KEY ?? '';
+declare const __PERSONAHUB_OPENROUTER_KEY__: string;
+const BUNDLED_OPENROUTER_KEY: string =
+  typeof __PERSONAHUB_OPENROUTER_KEY__ !== 'undefined' ? __PERSONAHUB_OPENROUTER_KEY__ : '';
 
 /**
  * Load an OpenRouter API key. Prefers the user's own key from safeStorage;

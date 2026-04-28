@@ -5,16 +5,29 @@ import renderer from 'vite-plugin-electron-renderer';
 import path from 'node:path';
 
 // Bake build-time secrets into main + preload bundles. Vite replaces the
-// LITERAL TEXT `process.env.PERSONAHUB_OPENROUTER_KEY` with the JSON-
+// LITERAL IDENTIFIER `__PERSONAHUB_OPENROUTER_KEY__` with the JSON-
 // stringified value at build time, so the source file stays clean (no
 // key on GitHub) but the compiled output has the key inlined. CI sets
 // the env from GitHub Actions secret PERSONAHUB_OPENROUTER_KEY; local
 // dev reads from .env.local or shell. If unset, the bundled key is "".
+//
+// Using a unique identifier (instead of `process.env.X`) avoids any
+// interaction with vite-plugin-electron / rollup's own env-replacement
+// behavior, which can produce surprising minified shapes when the value
+// is empty or undefined (a previous version emitted a literal `"-"` here
+// instead of the expected empty string).
+const bundledOpenRouterKey = process.env.PERSONAHUB_OPENROUTER_KEY ?? '';
 const buildDefines = {
-  'process.env.PERSONAHUB_OPENROUTER_KEY': JSON.stringify(
-    process.env.PERSONAHUB_OPENROUTER_KEY ?? '',
-  ),
+  __PERSONAHUB_OPENROUTER_KEY__: JSON.stringify(bundledOpenRouterKey),
 };
+// Loud sanity-check log so CI builds never silently ship without the key.
+// Mask all but the first 6 chars so the log doesn't leak the secret.
+if (bundledOpenRouterKey) {
+  const masked = bundledOpenRouterKey.slice(0, 10) + '…(' + bundledOpenRouterKey.length + ' chars)';
+  console.log('[vite.config] PERSONAHUB_OPENROUTER_KEY found:', masked);
+} else {
+  console.warn('[vite.config] PERSONAHUB_OPENROUTER_KEY is empty — bundled key disabled');
+}
 
 export default defineConfig({
   server: {
